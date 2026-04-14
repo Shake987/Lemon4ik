@@ -723,20 +723,24 @@ def main():
             time_since_last = current_time - last_post_time
 
             # 🚨 HIGH — одразу
-            if tier == "high":
+            if impact == "HIGH":
                 pass
 
-            # 📊 MEDIUM — не частіше ніж раз в 10 хв
+            # 🟡 MEDIUM
             elif tier == "medium":
                 if time_since_last < 600:
-                   continue
+                    print("❌ BLOCKED MEDIUM:", title)
+                    continue
 
-            # 💤 LOW — тільки якщо довго тиша
+            # 🟢 LOW
             else:
                 if time_since_last < 3600:
-                   continue
-
+                    print("❌ BLOCKED LOW:", title)
+                    continue
+                
+            print("✅ PASSED:", title, "| impact:", impact, "| tier:", tier)
             print("BEFORE TRY")
+            
 
             try:
                 print("INSIDE TRY")
