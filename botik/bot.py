@@ -7,6 +7,10 @@ import random
 import datetime
 import hashlib
 import os
+import warnings
+from bs4 import XMLParsedAsHTMLWarning
+
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 from bs4 import BeautifulSoup
 
@@ -52,7 +56,7 @@ def get_forexfactory_events():
     # 🔍 DEBUG
     print(response.text[:500])
 
-    soup = BeautifulSoup(response.content, "html.parser")
+    soup = BeautifulSoup(response.content, "xml")
 
     events = []
 
@@ -436,7 +440,7 @@ def main():
                 continue 
 
             # 🔥 MAIN (в момент новини)
-            if -3 <= minutes_to_event <= 3:
+            if -20 <= minutes_to_event <= 10:
 
                 actual = event.get("actual", "")
                 forecast = event.get("forecast", "")
@@ -531,30 +535,6 @@ def main():
                 clean_title = BeautifulSoup(entry.title, "html.parser").get_text()
                 title = clean_title.lower()
 
-                # 🔥 ФІЛЬТР
-                keywords = [
-                    "inflation", "cpi", "fed", "interest rate", "powell",
-                    "recession", "gdp", "jobs", "nfp",
-                    "ecb", "boe", "central bank",
-                    "oil", "opec", "war"
-                ]
-
-                if not any(word in title for word in keywords):
-                    print("❌ SKIPPED:", title)
-                    continue
-
-                # 🚫 АНТИ-ДУБЛІКАТИ
-                news_id = hashlib.md5(title.encode()).hexdigest()
-
-                if news_id in posted_news:
-                    print("⛔ DUPLICATE:", title)
-                    continue
-
-                # ⏱ АНТИ-СПАМ (2 хв між новинами)
-                if impact != "HIGH" and time.time() - last_post_time < 120:
-                    print("⏱ SKIP (SPAM CONTROL):", title)
-                    continue
-
                 # 🔥 CATEGORY
                 category = None
 
@@ -581,6 +561,7 @@ def main():
                     impact = "🟢 LOW"
 
                 print("IMPACT:", impact)
+
 
                 # 🎯 FINAL CONTROL 
 
@@ -653,9 +634,42 @@ def main():
 
             print("SIGNAL:", signal)
 
+            # 🔥 ФІЛЬТР
+            keywords = [
+                    "inflation", "cpi", "fed", "interest rate", "powell",
+                    "recession", "gdp", "jobs", "nfp",
+                    "ecb", "boe", "central bank",
+                    "oil", "opec", "war", "ppi", "core ppi", "wholesale inflation"
+            ]
+                
+            if impact != "HIGH":
+                if not any(word in title for word in keywords):
+                    print("❌ SKIPPED:", title)
+                    continue
+
+            # 🚫 АНТИ-ДУБЛІКАТИ
+                news_id = hashlib.md5(title.encode()).hexdigest()
+
+                if news_id in posted_news:
+                    print("⛔ DUPLICATE:", title)
+                    continue       
+
             # 🔥 FORCE HIGH NEWS (агресивний режим)
             if impact == "HIGH":
+                print("🔥 FORCE HIGH:", title)
                 pass
+
+            # ⏱ АНТИ-СПАМ (2 хв між новинами)
+                if impact != "HIGH" and time.time() - last_post_time < 120:
+                    print("⏱ SKIP (SPAM CONTROL):", title)
+                    continue
+
+            # 2. CRYPTO — теж пропускаємо навіть якщо neutral
+            elif any(x in title for x in ["bitcoin", "btc", "crypto"]):
+                print("🟡 CRYPTO FORCE:", title)
+                pass
+
+            # 3. всі інші — фільтр neutral
             elif signal == "neutral":
                 print("❌ SKIPPED (neutral):", title)
                 continue
@@ -702,6 +716,9 @@ def main():
             else:
                 tier = "low"
 
+            if impact == "HIGH":
+                tier = "high"    
+
             if confidence >= 80:
                 confidence_label = "🔥 STRONG"
             elif confidence >= 65:
@@ -733,7 +750,7 @@ def main():
                     continue
 
             # 🟢 LOW
-            else:
+            elif tier == "low":
                 if time_since_last < 3600:
                     print("❌ BLOCKED LOW:", title)
                     continue
@@ -771,9 +788,9 @@ def main():
                {assets_text}
                """
 
-                if any(title[:50] in t for t in recent_titles):
-                   print("🚫 SIMILAR NEWS:", title)
-                   continue
+                if impact != "HIGH" and any(title[:50] in t for t in recent_titles):
+                    print("⚠️ SIMILAR NEWS:", title)
+                    continue
                 
                 print("SENDING MESSAGE")
                 send_to_telegram(post)
@@ -793,7 +810,7 @@ def main():
             except Exception as e:
                 print("Error:", e)
 
-        time.sleep(90)  # перевірка кожні 5 хвилин
+        time.sleep(300)  # перевірка кожні 5 хвилин
 
 
 if __name__ == "__main__":
