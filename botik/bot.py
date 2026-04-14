@@ -805,15 +805,11 @@ def main():
 
                 print("Posted:", title)
 
-                time.sleep(10)  # пауза між постами
-
             except Exception as e:
                 print("Error:", e)
 
-        time.sleep(300)  # перевірка кожні 5 хвилин
-
 
 if __name__ == "__main__":
-    print("BOT STARTED")
-    main()
-
+    while True:
+        main()
+        time.sleep(300)
