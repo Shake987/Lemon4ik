@@ -670,7 +670,7 @@ def main():
                 pass
 
             # 3. всі інші — фільтр neutral
-            elif signal == "neutral":
+            elif signal == "neutral" and impact != "HIGH":
                 print("❌ SKIPPED (neutral):", title)
                 continue
 
