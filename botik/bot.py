@@ -634,18 +634,34 @@ def main():
 
             print("SIGNAL:", signal)
 
-            # 🔥 ФІЛЬТР
             keywords = [
                     "inflation", "cpi", "fed", "interest rate", "powell",
                     "recession", "gdp", "jobs", "nfp",
                     "ecb", "boe", "central bank",
                     "oil", "opec", "war", "ppi", "core ppi", "wholesale inflation"
             ]
+
+            # 🚨 HARD BYPASS FOR HIGH
+            if impact == "HIGH":
+                print("🔥 BYPASS HIGH:", title)
                 
-            if impact != "HIGH":
+            else:
+                # ❌ ВСІ ФІЛЬТРИ ТІЛЬКИ ДЛЯ НЕ-HIGH
+
+                # spam
+                if time.time() - last_post_time < 120:
+                   print("⏱ SKIP (SPAM CONTROL):", title)
+                   continue
+
+                # neutral
+                if signal == "neutral":
+                   print("❌ SKIPPED (neutral):", title)
+                   continue
+
+                # keywords
                 if not any(word in title for word in keywords):
-                    print("❌ SKIPPED:", title)
-                    continue
+                   print("❌ SKIPPED (keywords):", title)
+                   continue
 
             # 🚫 АНТИ-ДУБЛІКАТИ
                 news_id = hashlib.md5(title.encode()).hexdigest()
