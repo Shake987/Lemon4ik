@@ -328,9 +328,9 @@ def main():
     posted_news = set()
     recent_titles = []
     posted_events = set()
-    last_post_time = time.time()
+    last_post_time = 0
     last_update = 0
-
+    events = []
     while True:
         print("LOOP STARTED")
         
@@ -823,9 +823,10 @@ def main():
 
             except Exception as e:
                 print("Error:", e)
-
+                
+        print("Waiting 60 seconds before next check...")
+        time.sleep(60)
 
 if __name__ == "__main__":
     while True:
         main()
-        time.sleep(300)
