@@ -30,13 +30,11 @@ def get_direction(actual, forecast):
 
 
 def get_forexfactory_events():
-    url = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
+    url = f"https://nfs.faireconomy.media/ff_calendar_thisweek.xml?v={int(time.time())}"
 
     headers = {
         "User-Agent": "Mozilla/5.0"
     }
-
-    import time
 
     for i in range(3):
         response = requests.get(url, headers=headers)
@@ -353,6 +351,7 @@ def main():
             print("📊 Using cached events:", len(events))
 
         for event in events:
+            scenario = ""
             title = event["title"]
             currency = event["currency"]
             impact = event["impact"]
@@ -360,7 +359,7 @@ def main():
             if currency not in ["USD", "EUR", "GBP"]:
                 continue
 
-            if impact.lower() != "high":
+            if impact.lower() != "low":
                 continue
 
             # 🔍 DEBUG 
@@ -416,7 +415,7 @@ def main():
             if minutes_to_event > 120:
                 continue
 
-            if 0 < minutes_to_event <= 5 and impact.lower() == "high":            
+            if 0 < minutes_to_event <= 5 and impact.lower() in ["high", "medium"]:           
                 
                 event_id = (title + currency + impact + "PRE").strip()
 
@@ -426,7 +425,7 @@ def main():
 
             Event: {title.upper()}
             Currency: {currency}
-            Impact: 🔴 HIGH
+            Impact: {"🔴 HIGH" if impact.lower() == "high" else "🟠 MEDIUM"}
 
             🧠 Scenarios:
             {scenario}
@@ -459,7 +458,7 @@ def main():
                 if not actual:
                     event_id = base_id + "_WAIT"
                 else:
-                    event_id = base_id + "_ACTUAL_" + actual
+                    event_id = base_id + "_ACTUAL_" + str(actual)
 
                 # 🚫 БЛОК ДУБЛІВ
                 if event_id in posted_events:
