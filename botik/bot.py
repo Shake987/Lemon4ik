@@ -376,8 +376,6 @@ def main():
     last_update = 0
     events = []
     while True:
-        print("DEBUG: Цикл працює, шукаю новини...")
-        print("LOOP STARTED")
         
         now_ts = time.time()
         
@@ -390,7 +388,6 @@ def main():
             0 < (e["time"] - datetime.datetime.now(datetime.timezone.utc)).total_seconds()/60 < 3
             for e in events
         ):
-            print("🔄 Updating ForexFactory...")
             events = get_forexfactory_events()
             last_update = now_ts
         else:
@@ -401,167 +398,75 @@ def main():
             title = event["title"]
             currency = event["currency"]
             impact = event["impact"]
-
             actual = event.get("actual", "").strip()
-            if not actual:
-                continue
+            forecast = event.get("forecast", "").strip()
+            previous = event.get("previous", "").strip()
+            event_time = event["time"]
+            now = datetime.datetime.now(datetime.timezone.utc)
+            minutes_to_event = (event_time - now).total_seconds() / 60
 
             if currency not in ["USD", "EUR", "GBP", "XAU", "BTC", "ETH", "OIL"]:
                 continue
-
             if impact.lower() == "low":
-                news_id = f"low_{title}_{currency}"
-                if news_id not in posted_events:
-                    low_priority_news.append(f"• {currency}: {title}")
-                    posted_events.add(news_id)
                 continue
-
-            # 🧠 SCENARIOS (SMART)
+            if minutes_to_event > 120: # Не чіпаємо новини, що будуть через 2 години+
+                continue
 
             title_lower = title.lower()
-
-            # CPI / Inflation
             if any(word in title_lower for word in ["cpi", "pce", "inflation"]):
-
                 if currency == "USD":
-                    scenario = """↑ Strong inflation → USD ↑ / Gold ↓ / Indices ↓
-↓ Weak inflation → USD ↓ / Gold ↑ / Indices ↑"""
-
-                elif currency == "EUR":
-                    scenario = """↑ Strong inflation → EUR ↑ / USD ↓
-↓ Weak inflation → EUR ↓ / USD ↑"""
-
-                elif currency == "GBP":
-                    scenario = """↑ Strong inflation → GBP ↑ / USD ↓
-↓ Weak inflation → GBP ↓ / USD ↑"""
-
+                    scenario = "↑ Strong inflation → USD ↑ / Gold ↓\n↓ Weak inflation → USD ↓ / Gold ↑"
                 else:
-                    scenario = "Inflation event – watch volatility"
-            
-            # NFP / Jobs
+                    scenario = f"↑ Strong inflation → {currency} ↑\n↓ Weak inflation → {currency} ↓"
             elif "nfp" in title_lower or "employment" in title_lower:
+                scenario = f"↑ Strong jobs → {currency} ↑\n↓ Weak jobs → {currency} ↓"
+            else:
+                scenario = "High volatility expected. Follow the data."
 
-                if currency == "USD":
-                    scenario = """↑ Strong jobs → USD ↑ / Indices ↑
-↓ Weak jobs → USD ↓ / Indices ↓"""
-
-                elif currency == "EUR":
-                    scenario = """↑ Strong jobs → EUR ↑
-↓ Weak jobs → EUR ↓"""
-
-                elif currency == "GBP":
-                    scenario = """↑ Strong jobs → GBP ↑
-↓ Weak jobs → GBP ↓"""
-            
-                else:
-                    scenario = "Jobs data – volatility expected"
-            
-            # 🔥 PRE-NEWS ЛОГІКА
-
-            event_time = event["time"]
-            now = datetime.datetime.now(datetime.timezone.utc)
-
-            minutes_to_event = (event_time - now).total_seconds() / 60
-
-            if minutes_to_event > 120:
-                continue
-
-            if 0 < minutes_to_event <= 5 and impact.lower() in ["high", "medium"]:           
-                
-                event_id = (title + currency + impact + "PRE").strip()
-
-                if event_id in posted_events:
-                    continue
-                post = f"""⏳ Upcoming Event ({int(minutes_to_event)} min)
-
-            Event: {title.upper()}
-            Currency: {currency}
-            Impact: {"🔴 HIGH" if impact.lower() == "high" else "🟠 MEDIUM"}
-
-            🧠 Scenarios:
-            {scenario}
-            """
-
-                send_to_telegram(post)
-                posted_events.add(event_id)
-
-                print("⏳ Sent PRE event:", title)
-
+            # --- 3. 🔥 PRE-NEWS ЛОГІКА (Анонс за 5 хв) ---
+            if 0 < minutes_to_event <= 5:
+                event_id = (title + currency + impact + "_PRE").strip()
+                if event_id not in posted_events:
+                    post = f"⏳ Upcoming Event ({int(minutes_to_event)} min)\n\nEvent: {title.upper()}\nCurrency: {currency}\nImpact: {impact.upper()}\n\n🧠 Scenarios:\n{scenario}"
+                    send_to_telegram(post)
+                    posted_events.add(event_id)
+                    print("⏳ Sent PRE event:", title)
                 continue 
 
-            # 🔥 MAIN (в момент новини)
-            if -20 <= minutes_to_event <= 10:
-
-                actual = event.get("actual", "")
-                forecast = event.get("forecast", "")
-                previous = event.get("previous", "")
-
-                if not actual and minutes_to_event < -12:
-                    continue
-
-                # 🧠 УНІКАЛЬНИЙ КЛЮЧ ПОДІЇ
-                base_id = (title + currency + impact).strip()
+            # --- 4. 🔥 MAIN NEWS ЛОГІКА (Момент виходу) ---
+            # Перевіряємо в діапазоні від -20 хв до +2 хв
+            if -20 <= minutes_to_event <= 2:
+                is_speech = "speak" in title.lower() or "testif" in title.lower()
                 
-                # 🔥 ЛОГІКА ID
-                
-                base_id = (title + currency + impact).strip()
-                
-                if not actual:
-                    event_id = base_id + "_WAIT"
-                else:
-                    event_id = base_id + "_ACTUAL_" + str(actual)
+                # КРИТИЧНО: Якщо немає Actual і це не виступ — чекаємо наступного циклу
+                if not actual and not is_speech:
+                    continue 
 
-                # 🚫 БЛОК ДУБЛІВ
+                # Унікальний ID саме для посту з цифрами
+                event_id = (title + currency + impact + "_MAIN_" + actual).strip()
                 if event_id in posted_events:
                     continue
 
-                print("ACTUAL:", actual)
-                print("FORECAST:", forecast)
-
-                
-                # 🧠 ЛОГІКА ДАНИХ
-                if not actual:
-                    result = "⏳ Waiting for data..."
-                    move = ""
+                # Логіка аналізу цифр
+                if is_speech:
+                    result = "🎙 SPEECH / TESTIMONY"
+                    move = "⚖️ Watch live for market sentiment"
                 else:
                     direction = get_direction(actual, forecast)
-
                     if direction == "UP":
                         result = "📈 ABOVE FORECAST"
-                        move = "📈 USD ↑ / Gold ↓ / Indices ↓"
-
+                        move = "📈 USD ↑ / Gold ↓" if currency == "USD" else f"📈 {currency} ↑"
                     elif direction == "DOWN":
                         result = "📉 BELOW FORECAST"
-                        move = "📉 USD ↓ / Gold ↑ / Indices ↑"
-
-                    elif direction == "NEUTRAL":
+                        move = "📉 USD ↓ / Gold ↑" if currency == "USD" else f"📉 {currency} ↓"
+                    else:
                         result = "📊 IN LINE"
                         move = "⚖️ No strong move"
 
-                    else:
-                        result = "⚠️ Data error"
-                        move = ""
-
-                post = f"""🚨 Economic Release
-
-            Event: {title.upper()}
-            Currency: {currency}
-
-            Actual: {actual}
-            Forecast: {forecast}
-            Previous: {previous}
-
-            {result}
-
-            {move}
-            """
-
+                post = f"🚨 Economic Release\n\nEvent: {title.upper()}\nCurrency: {currency}\n\nActual: {actual}\nForecast: {forecast}\nPrevious: {previous}\n\n{result}\n\n{move}"
                 send_to_telegram(post)
                 posted_events.add(event_id)
-
-                print("📅 Sent MAIN event:", title)
-
-                continue   
+                print("📅 Sent MAIN event:", title)   
             
         # =========================
         # 🔵 2. RSS NEWS
@@ -606,26 +511,27 @@ def main():
                 else:
                     impact = "🟢 LOW"
 
+                # 🔍 НОВИЙ БЛОК: ФІЛЬТР ПО КЛЮЧОВИМ СЛОВАМ 
 
-                # 🎯 FINAL CONTROL 
-
-                if impact == "HIGH":
-                    pass  # завжди публікуємо
-
-                elif impact == "MEDIUM":
-                    if random.random() > 0.1:
-                        continue
-
-                elif impact == "LOW":
-                    if category == "other":
-                        continue
-                    if random.random() > 0.2:  # тільки ~20% LOW
-                        continue
+                keywords = [
+                    "inflation", "cpi", "fed", "interest rate", "powell",
+                    "recession", "gdp", "jobs", "nfp", "earning", "revenue", "guidance",
+                    "ecb", "boe", "central bank", "pce", "yield", "auction", 
+                    "oil", "opec", "war", "ppi", "core ppi", "wholesale inflation",
+                    "btc", "eth", "xau", "usd", "eur", "gbp" "meeting", "statement", "decision", "press conference",
+                    "market", "analysis", "price", "crypto", "stock", "update", "forecast"
+            ]
                 
-                news_id = (entry.title + str(entry.get("link", ""))).strip()
+                is_relevant = any(word in title for word in keywords)
+                if not is_relevant and impact != "🔴 HIGH":
+                    low_priority_news.append(f"⚪️ {clean_title}")
+                    continue
+
+                # 🚫 АНТИ-ДУБЛІКАТИ
+                news_id = hashlib.md5(title.encode()).hexdigest()
 
                 if news_id in posted_news:
-                    continue
+                    continue     
 
 
             # 🔥 СИГНАЛ
@@ -673,80 +579,13 @@ def main():
             else:
                 signal = "neutral"
 
-            keywords = [
-                    "inflation", "cpi", "fed", "interest rate", "powell",
-                    "recession", "gdp", "jobs", "nfp",
-                    "ecb", "boe", "central bank",
-                    "oil", "opec", "war", "ppi", "core ppi", "wholesale inflation",
-                    "market", "analysis", "price", "crypto", "stock", "update", "forecast"
-            ]
-
-            # 🚨 HARD BYPASS FOR HIGH
-            if impact == "HIGH":
-                print("🔥 BYPASS HIGH:", title)
-                
-            else:
-                # ❌ ВСІ ФІЛЬТРИ ТІЛЬКИ ДЛЯ НЕ-HIGH
-
-                # spam
-                if time.time() - last_post_time < 120:
-                   print("⏱ SKIP (SPAM CONTROL):", title)
-                   continue
-
-                # neutral
-                if signal == "neutral":
-                   print("❌ SKIPPED (neutral):", title)
-                   continue
-
-                # keywords
-                if not any(word in title for word in keywords):
-                   print("❌ SKIPPED (keywords):", title)
-                   continue
-
-            # 🚫 АНТИ-ДУБЛІКАТИ
-                news_id = hashlib.md5(title.encode()).hexdigest()
-
-                if news_id in posted_news:
-                    print("⛔ DUPLICATE:", title)
-                    continue       
-
-            # 🔥 FORCE HIGH NEWS (агресивний режим)
-            if impact == "HIGH":
-                print("🔥 FORCE HIGH:", title)
-                pass
-
-            # ⏱ АНТИ-СПАМ (2 хв між новинами)
-                if impact != "HIGH" and time.time() - last_post_time < 120:
-                    print("⏱ SKIP (SPAM CONTROL):", title)
-                    continue
-
-            # 2. CRYPTO — теж пропускаємо навіть якщо neutral
-            elif any(x in title for x in ["bitcoin", "btc", "crypto"]):
-                print("🟡 CRYPTO FORCE:", title)
-                pass
-
-            # 3. всі інші — фільтр neutral
-            elif signal == "neutral" and impact != "HIGH":
-                print("❌ SKIPPED (neutral):", title)
-                continue
 
             # 🔥 CONFIDENCE
             confidence = 50  # база 
 
-            # вплив сигналу
-            if signal in ["hawkish", "dovish"]:
-                confidence += 20
-
-            elif signal in ["risk_on", "risk_off"]:
-                confidence += 15
-
-            # вплив impact
-            if impact == "🔴 HIGH":
-                confidence += 25
-            elif impact == "🟡 MEDIUM":
-                confidence += 15
-            else:
-                confidence += 5
+            if signal in ["hawkish", "dovish"]: confidence += 20
+            if impact == "🔴 HIGH": confidence += 25
+            elif impact == "🟡 MEDIUM": confidence += 15
 
             confidence += abs(signal_score) * 5
 
@@ -760,20 +599,13 @@ def main():
                 confidence += 10
             
             # 🔥 TIER LOGIC
-            if impact == "HIGH":
-                tier = "high"
 
-            elif confidence >= 75:
+            if impact == "🔴 HIGH" or confidence >= 75:
                 tier = "high"
-
             elif confidence >= 60:
                 tier = "medium"
-
             else:
                 tier = "low"
-
-            if impact == "HIGH":
-                tier = "high"    
 
             if confidence >= 80:
                 confidence_label = "🔥 STRONG"
@@ -795,23 +627,18 @@ def main():
             current_time = time.time()
             time_since_last = current_time - last_post_time
 
-            # 🚨 HIGH — одразу
-            if impact == "HIGH":
-                pass
-
-            # 🟡 MEDIUM
+            if tier == "high":
+                pass # Пропускаємо до публікації негайно
+        
             elif tier == "medium":
-                if time_since_last < 600:
-                    print("❌ BLOCKED MEDIUM:", title)
+                if time_since_last < 600: # 10 хвилин
+                    low_priority_news.append(f"🟡 {clean_title}")
                     continue
-
-            # 🟢 LOW
-            elif tier == "low":
-                if time_since_last < 3600:
-                    print("❌ BLOCKED LOW:", title)
-                    continue
+        
+            else: # low
+                low_priority_news.append(f"🔹 {clean_title}")
+                continue
                 
-            
 
             try:
                 assets = SIGNAL_IMPACT.get(signal, {})
@@ -845,14 +672,13 @@ def main():
                     continue
                 
                 send_to_telegram(post)
+                last_post_time = time.time()
 
                 posted_news.add(news_id)
                 recent_titles.append(title.lower())
 
                 if len(recent_titles) > 20:
                     recent_titles.pop(0)
-    
-                last_post_time = time.time()
 
                 print("Posted:", title)
 
@@ -870,7 +696,7 @@ def main():
                     low_priority_news = []
                 
             print("Waiting 60 seconds before next check...")
-            time.sleep(60)
+            time.sleep(180)
 
 if __name__ == "__main__":
     while True:
