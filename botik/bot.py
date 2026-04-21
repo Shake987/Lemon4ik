@@ -10,23 +10,41 @@ import os
 import warnings
 from bs4 import XMLParsedAsHTMLWarning
 
+import google.generativeai as genai
+
+def call_openai_gpt(prompt):
+    try:
+        genai.configure(api_key="AIzaSyAG8vfRs4UyMLyyRB3_-EEm1C62BwHohEg")
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(text_prompt)
+        return response.text
+    except Exception as e:
+        print(f"AI Error: {e}")
+        return "Не вдалося згенерувати аналітику ринку."
+
+def generate_ai_image(prompt):
+    # Посилання на гарну картинку-заглушку
+    return "https://images.unsplash.com/photo-1611974717482-98aa003745fc?q=80&w=1000"
+
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 from bs4 import BeautifulSoup
 
 def get_direction(actual, forecast):
+    if not actual or not forecast:
+        return "NEUTRAL"
     try:
-        a = float(actual.replace("%", ""))
-        f = float(forecast.replace("%", ""))
-
-        if a > f:
-             return "UP"
-        elif a < f:
-             return "DOWN"
-        else:
-             return "NEUTRAL"
+        def clean(val):
+            return float(val.replace('%', '').replace('K', '').replace('M', '').strip())
+        
+        a = clean(actual)
+        f = clean(forecast)
+        
+        if a > f: return "UP"
+        if a < f: return "DOWN"
+        return "NEUTRAL"
     except:
-        return "UNKNOWN"
+        return "NEUTRAL"
 
 
 def get_forexfactory_events():
@@ -97,6 +115,32 @@ def get_forexfactory_events():
             continue
 
     return events
+
+def send_low_priority_digest():
+    global low_priority_news, last_digest_time
+    
+    if not low_priority_news:
+        return
+
+    # Формуємо запит до AI
+    news_text = "\n".join(low_priority_news)
+    prompt = f"Зроби стислий аналітичний підсумок цих новин для трейдерів. Який загальний фон вони створюють? Список новин:\n{news_text}"
+    
+    # Отримуємо текст від AI
+    summary = call_openai_gpt(prompt) # Твоя функція виклику GPT
+    
+    # Генеруємо картинку через Nano Banana 2
+    # Тут ти викликаєш функцію генерації зображення (image_generation)
+    image_url = generate_ai_image(f"Economic news background, professional trading style, {summary[:50]}")
+
+    post_text = f"📊 **DAILY MARKET SUMMARY (Low Impact)**\n\n{summary}\n\n#DailyDigest #MarketUpdate"
+    
+    # Відправляємо в Телеграм (фото + текст)
+    send_photo_to_telegram(image_url, post_text)
+    
+    # Очищуємо чернетку
+    low_priority_news = []
+    last_digest_time = time.time()
 
 # 🔥 SCENARIO ENGINE
 def get_scenario(title):
@@ -326,10 +370,13 @@ def main():
     posted_news = set()
     recent_titles = []
     posted_events = set()
+    low_priority_news = [] 
+    last_digest_time = time.time()
     last_post_time = 0
     last_update = 0
     events = []
     while True:
+        print("DEBUG: Цикл працює, шукаю новини...")
         print("LOOP STARTED")
         
         now_ts = time.time()
@@ -356,10 +403,19 @@ def main():
             currency = event["currency"]
             impact = event["impact"]
 
-            if currency not in ["USD", "EUR", "GBP"]:
+            actual = event.get("actual", "").strip()
+            if not actual:
+            print(f"⏳ Чекаю на фактичні дані для: {title}")
+            continue
+
+            if currency not in ["USD", "EUR", "GBP", "XAU", "BTC", "ETH", "OIL"]:
                 continue
 
             if impact.lower() != "low":
+                news_id = f"low_{title}_{currency}"
+                if news_id not in posted_events:
+                    low_priority_news.append(f"• {currency}: {title}")
+                    posted_events.add(news_id)
                 continue
 
             # 🔍 DEBUG 
@@ -552,10 +608,14 @@ def main():
                 print("CATEGORY:", category)
 
                 # 🔥 IMPACT
-                if any(word in title for word in HIGH_IMPACT):
+                title_up = title.upper()
+        
+                if any(word in title_up for word in ["FED", "RATE", "CPI", "INFLATION", "FOMC", "URGENT", "BREAKING"]):
                     impact = "🔴 HIGH"
-                elif any(word in title for word in MEDIUM_IMPACT):
+            
+                elif any(word in title_up for word in ["MARKET", "BANK", "REPORT", "ECONOMY", "GROWTH", "JOB", "OUTLOOK", "STOCKS", "ANALYSIS"]):
                     impact = "🟡 MEDIUM"
+            
                 else:
                     impact = "🟢 LOW"
 
@@ -568,7 +628,7 @@ def main():
                     pass  # завжди публікуємо
 
                 elif impact == "MEDIUM":
-                    if random.random() > 0.8:  # ~80% проходить
+                    if random.random() > 0.1:
                         print("⏭ SKIP MEDIUM:", title)
                         continue
 
@@ -637,7 +697,8 @@ def main():
                     "inflation", "cpi", "fed", "interest rate", "powell",
                     "recession", "gdp", "jobs", "nfp",
                     "ecb", "boe", "central bank",
-                    "oil", "opec", "war", "ppi", "core ppi", "wholesale inflation"
+                    "oil", "opec", "war", "ppi", "core ppi", "wholesale inflation",
+                    "market", "analysis", "price", "crypto", "stock", "update", "forecast"
             ]
 
             # 🚨 HARD BYPASS FOR HIGH
@@ -822,9 +883,19 @@ def main():
 
             except Exception as e:
                 print("Error:", e)
+
+            now_ts = time.time()
+            if (now_ts - last_digest_time > 14400) or (len(low_priority_news) >= 2):
+                if low_priority_news:
+                    print(f"⏰ Generating digest for {len(low_priority_news)} news...")
+                    send_low_priority_digest() # Твоя функція з AI
+            
+                    # Скидаємо таймер і чергу
+                    last_digest_time = now_ts
+                    low_priority_news = []
                 
-        print("Waiting 60 seconds before next check...")
-        time.sleep(60)
+            print("Waiting 60 seconds before next check...")
+            time.sleep(60)
 
 if __name__ == "__main__":
     while True:
