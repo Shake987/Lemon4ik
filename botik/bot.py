@@ -392,10 +392,9 @@ def main():
         ):
             print("🔄 Updating ForexFactory...")
             events = get_forexfactory_events()
-            print("📅 EVENTS COUNT:", len(events))
             last_update = now_ts
         else:
-            print("📊 Using cached events:", len(events))
+            pass
 
         for event in events:
             scenario = ""
@@ -405,21 +404,17 @@ def main():
 
             actual = event.get("actual", "").strip()
             if not actual:
-                print(f"⏳ Чекаю на фактичні дані для: {title}")
                 continue
 
             if currency not in ["USD", "EUR", "GBP", "XAU", "BTC", "ETH", "OIL"]:
                 continue
 
-            if impact.lower() != "low":
+            if impact.lower() == "low":
                 news_id = f"low_{title}_{currency}"
                 if news_id not in posted_events:
                     low_priority_news.append(f"• {currency}: {title}")
                     posted_events.add(news_id)
                 continue
-
-            # 🔍 DEBUG 
-            print("EVENT TIME:", event["time"], type(event["time"]))
 
             # 🧠 SCENARIOS (SMART)
 
@@ -572,20 +567,14 @@ def main():
         # 🔵 2. RSS NEWS
         # =========================
         for url in RSS_URLS:
-            print("👉 LOOP URL:", url)
             
             response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
             feed = feedparser.parse(response.content)
-
-            print("RSS LOADED")
-            print("ENTRIES COUNT:", len(feed.entries))
             
-
             for entry in feed.entries[:3]:
 
                 category = "other"
-                impact = "LOW" 
-                print("Checking:", entry.title)
+                impact = "LOW"
 
                 clean_title = BeautifulSoup(entry.title, "html.parser").get_text()
                 title = clean_title.lower()
@@ -605,8 +594,6 @@ def main():
                     if any(word in title for word in ["tesla", "apple", "amazon"]):
                         category = "corporate"
 
-                print("CATEGORY:", category)
-
                 # 🔥 IMPACT
                 title_up = title.upper()
         
@@ -619,8 +606,6 @@ def main():
                 else:
                     impact = "🟢 LOW"
 
-                print("IMPACT:", impact)
-
 
                 # 🎯 FINAL CONTROL 
 
@@ -629,15 +614,12 @@ def main():
 
                 elif impact == "MEDIUM":
                     if random.random() > 0.1:
-                        print("⏭ SKIP MEDIUM:", title)
                         continue
 
                 elif impact == "LOW":
                     if category == "other":
-                        print("❌ SKIP LOW OTHER:", title)
                         continue
                     if random.random() > 0.2:  # тільки ~20% LOW
-                        print("⏭ SKIP LOW:", title)
                         continue
                 
                 news_id = (entry.title + str(entry.get("link", ""))).strip()
@@ -690,8 +672,6 @@ def main():
                 signal = "dovish"
             else:
                 signal = "neutral"
-
-            print("SIGNAL:", signal)
 
             keywords = [
                     "inflation", "cpi", "fed", "interest rate", "powell",
@@ -831,13 +811,9 @@ def main():
                     print("❌ BLOCKED LOW:", title)
                     continue
                 
-            print("✅ PASSED:", title, "| impact:", impact, "| tier:", tier)
-            print("BEFORE TRY")
             
 
             try:
-                print("INSIDE TRY")
-
                 assets = SIGNAL_IMPACT.get(signal, {})
                 assets_text = " | ".join([
                     f"{ASSET_EMOJI.get(k, '')} {k} {ARROW_EMOJI.get(v, v)}"
@@ -868,7 +844,6 @@ def main():
                     print("⚠️ SIMILAR NEWS:", title)
                     continue
                 
-                print("SENDING MESSAGE")
                 send_to_telegram(post)
 
                 posted_news.add(news_id)
