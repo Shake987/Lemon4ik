@@ -405,8 +405,8 @@ def main():
 
             actual = event.get("actual", "").strip()
             if not actual:
-            print(f"⏳ Чекаю на фактичні дані для: {title}")
-            continue
+                print(f"⏳ Чекаю на фактичні дані для: {title}")
+                continue
 
             if currency not in ["USD", "EUR", "GBP", "XAU", "BTC", "ETH", "OIL"]:
                 continue
