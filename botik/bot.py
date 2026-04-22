@@ -49,7 +49,7 @@ def call_gemini_ai(prompt):
 def generate_ai_image(prompt):
     try:
         # Використовуємо налаштовану модель для генерації
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-pro')
         
         # Додаємо контекст для Nano Banana 2, щоб картинка була професійною
         full_prompt = f"Professional financial news cover, cinematic trading environment, {prompt}, 8k resolution, high quality"
