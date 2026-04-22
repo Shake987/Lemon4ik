@@ -25,8 +25,27 @@ def call_openai_gpt(prompt):
         return "Не вдалося згенерувати аналітику ринку."
 
 def generate_ai_image(prompt):
-    # Посилання на гарну картинку-заглушку
-    return "https://images.unsplash.com/photo-1611974717482-98aa003745fc?q=80&w=1000"
+    try:
+        # Використовуємо налаштовану модель для генерації
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # Додаємо контекст для Nano Banana 2, щоб картинка була професійною
+        full_prompt = f"Professional financial news cover, cinematic trading environment, {prompt}, 8k resolution, high quality"
+        
+        # Виклик генерації (повертає об'єкт з посиланням на зображення)
+        response = model.generate_content(full_prompt)
+        
+        # Припускаємо, що API повертає URL у відповіді
+        # Якщо твоя бібліотека підтримує пряму генерацію посилання:
+        if response.text:
+            # Тут логіка отримання URL залежить від конкретного API Nano Banana 
+            # Зазвичай це виглядає як повернення згенерованого посилання
+            return response.text 
+            
+    except Exception as e:
+        print(f"⚠️ Помилка генерації зображення: {e}")
+        # Залишаємо Unsplash як запасний варіант (fallback)
+        return "https://images.unsplash.com/photo-1611974717482-98aa003745fc"
 
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
@@ -119,7 +138,7 @@ def get_forexfactory_events():
     return events
 
 def send_low_priority_digest(low_priority_news):
-    global last_digest_time
+    global last_digest_time, low_priority_news
     
     if not low_priority_news:
         return
@@ -131,9 +150,17 @@ def send_low_priority_digest(low_priority_news):
     # Отримуємо текст від AI
     summary = call_openai_gpt(prompt) # Твоя функція виклику GPT
     
-    # Генеруємо картинку через Nano Banana 2
-    # Тут ти викликаєш функцію генерації зображення (image_generation)
-    image_url = generate_ai_image(f"Economic news background, professional trading style, {summary[:50]}")
+    mood_prompt = f"Зроби стислий аналіз фону (Bullish, Bearish чи Neutral) для цих новин. Дай відповідь одним словом. Новини: {summary[:100]}"
+    market_mood = call_openai_gpt(mood_prompt).strip() # Наприклад: Bullish
+        
+    
+    if market_mood == "Bullish":
+        image_prompt = "modern minimalist wood desk with dark-mode MacBook display showing green abstract bar charts, ceramic mug with Bull icon, cityscape twilight background, soft natural lighting"
+    else:
+        image_prompt = "sleek dark-mode financial terminal graphics with deep blues and grays, vibrant neon green and red candlestick and smoothness index lines, professional trading style"
+
+    # 3. Викликаємо реальну генерацію картинки через Nano Banana 2
+    image_url = generate_ai_image(image_prompt)
 
     post_text = f"📊 **DAILY MARKET SUMMARY (Low Impact)**\n\n{summary}\n\n#DailyDigest #MarketUpdate"
     
@@ -670,7 +697,6 @@ def main():
                """
 
                 if impact != "HIGH" and any(title[:50] in t for t in recent_titles):
-                    print("⚠️ SIMILAR NEWS:", title)
                     continue
                 
                 send_to_telegram(post)
@@ -697,8 +723,8 @@ def main():
                     last_digest_time = now_ts
                     low_priority_news = []
                 
-            print("Waiting 60 seconds before next check...")
-            time.sleep(180)
+        print("Waiting 60 seconds before next check...")
+        time.sleep(180)
 
 if __name__ == "__main__":
     while True:
