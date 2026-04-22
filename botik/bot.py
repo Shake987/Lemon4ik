@@ -3,21 +3,43 @@ print("START FILE")
 import feedparser
 import requests
 import time
-import random
 import datetime
 import hashlib
 import os
 import warnings
 from bs4 import XMLParsedAsHTMLWarning
-
 import google.generativeai as genai
 
-low_priority_news = []
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
-def call_openai_gpt(prompt):
+# =========================
+# 🔑 CONFIG
+# =========================
+TELEGRAM_BOT_TOKEN = "8789135346:AAFaM57p_BN7KsZ0IeQFVVgzKGUJTa4gJL8"
+TELEGRAM_CHAT_ID = "467700442"
+GOOGLE_API_KEY = "AIzaSyAG8vfRs4UyMLyyRB3_-EEm1C62BwHohEg"
+
+low_priority_news = []
+last_digest_time = time.time()
+posted_news = set()
+posted_events = set()
+
+
+def send_photo_to_telegram(photo_url, caption):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "photo": photo_url,
+        "caption": caption,
+        "parse_mode": "Markdown"
+    }
+    response = requests.post(url, json=payload)
+    return response
+
+def call_gemini_ai(prompt):
     try:
         genai.configure(api_key="AIzaSyAG8vfRs4UyMLyyRB3_-EEm1C62BwHohEg")
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-pro')
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
@@ -46,8 +68,6 @@ def generate_ai_image(prompt):
         print(f"⚠️ Помилка генерації зображення: {e}")
         # Залишаємо Unsplash як запасний варіант (fallback)
         return "https://images.unsplash.com/photo-1611974717482-98aa003745fc"
-
-warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 from bs4 import BeautifulSoup
 
@@ -138,21 +158,28 @@ def get_forexfactory_events():
     return events
 
 def send_low_priority_digest():
-    global last_digest_time, low_priority_news
+    global low_priority_news, last_digest_time
+    
+    print(f"DEBUG: Зайшли. У списку зараз: {len(low_priority_news)} новин")
     
     if not low_priority_news:
+        print("DEBUG: Новин реально немає")
         return
 
-    # Формуємо запит до AI
-    news_text = "\n".join(low_priority_news)
-    prompt = f"Зроби стислий аналітичний підсумок цих новин для трейдерів. Який загальний фон вони створюють? Список новин:\n{news_text}"
+    try:
+        news_text = "\n".join(low_priority_news)
+        prompt = f"Зроби стислий аналітичний підсумок цих новин для трейдерів. Який загальний фон вони створюють? Список новин:\n{news_text}"
     
-    # Отримуємо текст від AI
-    summary = call_openai_gpt(prompt) # Твоя функція виклику GPT
+        print("DEBUG: Запит до ШІ...") # КРОК 2
+        summary = call_gemini_ai(prompt)
+        print(f"DEBUG: ШІ відповів (перші 20 символів): {summary[:20]}") # КРОК 3
     
-    mood_prompt = f"Зроби стислий аналіз фону (Bullish, Bearish чи Neutral) для цих новин. Дай відповідь одним словом. Новини: {summary[:100]}"
-    market_mood = call_openai_gpt(mood_prompt).strip() # Наприклад: Bullish
-        
+        mood_prompt = f"Зроби стислий аналіз фону (Bullish, Bearish чи Neutral) для цих новин. Дай відповідь одним словом. Новини: {summary[:100]}"
+        market_mood = call_gemini_ai(mood_prompt).strip() # Наприклад: Bullish
+
+    except Exception as e:
+        print(f"❌ Помилка на етапі ШІ: {e}")
+        market_mood = "Neutral"
     
     if market_mood == "Bullish":
         image_prompt = "modern minimalist wood desk with dark-mode MacBook display showing green abstract bar charts, ceramic mug with Bull icon, cityscape twilight background, soft natural lighting"
@@ -163,6 +190,8 @@ def send_low_priority_digest():
     image_url = generate_ai_image(image_prompt)
 
     post_text = f"📊 **DAILY MARKET SUMMARY (Low Impact)**\n\n{summary}\n\n#DailyDigest #MarketUpdate"
+    
+    print("DEBUG: Намагаємось відправити в Телеграм...") # КРОК 4
     
     # Відправляємо в Телеграм (фото + текст)
     try:
@@ -204,13 +233,6 @@ def get_scenario(title):
 → Gold ↑"""
     
     return "⚠️ No clear scenario"
-
-# =========================
-# 🔑 CONFIG
-# =========================
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # =========================
 # 📰 RSS SOURCE (Reuters)
@@ -408,21 +430,17 @@ MEDIUM_IMPACT = [
 ]
 
 def main():
-    posted_news = set()
+    global low_priority_news, last_digest_time, posted_news, posted_events
+    
     recent_titles = []
-    posted_events = set()
-    low_priority_news = [] 
-    last_digest_time = time.time()
     last_post_time = 0
     last_update = 0
     events = []
     while True:
         
         now_ts = time.time()
-        
-        # =========================
+    
         # 🟢 1. FOREX FACTORY (CALENDAR)
-        # =========================
         
         # 🔄 оновлення раз на 15 хв
         if now_ts - last_update > 900 or any(
@@ -730,10 +748,9 @@ def main():
                 if low_priority_news:
                     print(f"⏰ Generating digest for {len(low_priority_news)} news...")
                     send_low_priority_digest() # Твоя функція з AI
-                
-        print("Waiting 60 seconds before next check...")
-        time.sleep(180)
 
 if __name__ == "__main__":
     while True:
         main()
+        print("Waiting 60 seconds before next check...")
+        time.sleep(60)
