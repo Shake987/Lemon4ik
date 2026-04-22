@@ -726,14 +726,10 @@ def main():
                 print("Error:", e)
 
             now_ts = time.time()
-            if (now_ts - last_digest_time > 14400) or (len(low_priority_news) >= 2):
+            if (now_ts - last_digest_time > 60) or (len(low_priority_news) >= 1):
                 if low_priority_news:
                     print(f"⏰ Generating digest for {len(low_priority_news)} news...")
                     send_low_priority_digest() # Твоя функція з AI
-            
-                    # Скидаємо таймер і чергу
-                    last_digest_time = now_ts
-                    low_priority_news = []
                 
         print("Waiting 60 seconds before next check...")
         time.sleep(180)
