@@ -12,11 +12,13 @@ from bs4 import XMLParsedAsHTMLWarning
 
 import google.generativeai as genai
 
+low_priority_news = []
+
 def call_openai_gpt(prompt):
     try:
         genai.configure(api_key="AIzaSyAG8vfRs4UyMLyyRB3_-EEm1C62BwHohEg")
         model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(text_prompt)
+        response = model.generate_content(prompt)
         return response.text
     except Exception as e:
         print(f"AI Error: {e}")
@@ -116,8 +118,8 @@ def get_forexfactory_events():
 
     return events
 
-def send_low_priority_digest():
-    global low_priority_news, last_digest_time
+def send_low_priority_digest(low_priority_news):
+    global last_digest_time
     
     if not low_priority_news:
         return
