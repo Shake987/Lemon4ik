@@ -137,7 +137,7 @@ def get_forexfactory_events():
 
     return events
 
-def send_low_priority_digest(low_priority_news):
+def send_low_priority_digest():
     global last_digest_time, low_priority_news
     
     if not low_priority_news:
