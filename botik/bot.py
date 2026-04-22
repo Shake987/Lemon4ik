@@ -165,7 +165,18 @@ def send_low_priority_digest():
     post_text = f"📊 **DAILY MARKET SUMMARY (Low Impact)**\n\n{summary}\n\n#DailyDigest #MarketUpdate"
     
     # Відправляємо в Телеграм (фото + текст)
-    send_photo_to_telegram(image_url, post_text)
+    try:
+       send_photo_to_telegram(image_url, post_text)
+       print("✅ Дайджест успішно відправлено!")
+    except Exception as e:
+        print(f"❌ Помилка при відправці дайджесту: {e}")
+        # Спроба відправити хоча б текст, якщо фото зламалося
+    try:
+        # Якщо у тебе є функція для тексту, наприклад send_message
+        # send_message_to_telegram(post_text) 
+        print("⚠️ Спроба відправити текст без фото...")
+    except:
+        pass
     
     # Очищуємо чернетку
     low_priority_news = []
