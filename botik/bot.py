@@ -39,7 +39,7 @@ def send_photo_to_telegram(photo_url, caption):
 def call_gemini_ai(prompt):
     try:
         genai.configure(api_key="AIzaSyAG8vfRs4UyMLyyRB3_-EEm1C62BwHohEg")
-        model = genai.GenerativeModel('gemini-3-flash')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
@@ -49,7 +49,7 @@ def call_gemini_ai(prompt):
 def generate_ai_image(prompt):
     try:
         # Використовуємо налаштовану модель для генерації
-        model = genai.GenerativeModel('gemini-3-flash')
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         # Додаємо контекст для Nano Banana 2, щоб картинка була професійною
         full_prompt = f"Professional financial news cover, cinematic trading environment, {prompt}, 8k resolution, high quality"
