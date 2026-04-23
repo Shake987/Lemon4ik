@@ -39,7 +39,7 @@ def send_photo_to_telegram(photo_url, caption):
 def call_gemini_ai(prompt):
     try:
         genai.configure(api_key="AIzaSyAG8vfRs4UyMLyyRB3_-EEm1C62BwHohEg")
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini-3-flash')
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
@@ -49,7 +49,7 @@ def call_gemini_ai(prompt):
 def generate_ai_image(prompt):
     try:
         # Використовуємо налаштовану модель для генерації
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini-3-flash')
         
         # Додаємо контекст для Nano Banana 2, щоб картинка була професійною
         full_prompt = f"Professional financial news cover, cinematic trading environment, {prompt}, 8k resolution, high quality"
@@ -744,10 +744,13 @@ def main():
                 print("Error:", e)
 
             now_ts = time.time()
-            if (now_ts - last_digest_time > 60) or (len(low_priority_news) >= 1):
+            if (now_ts - last_digest_time > 600) or (len(low_priority_news) >= 5):
                 if low_priority_news:
                     print(f"⏰ Generating digest for {len(low_priority_news)} news...")
                     send_low_priority_digest() # Твоя функція з AI
+
+                    low_priority_news.clear() # Очищуємо список, щоб наступного разу не було 7000+ новин
+                    print("DEBUG: Список новин очищено.")
 
 if __name__ == "__main__":
     while True:
