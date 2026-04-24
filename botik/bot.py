@@ -9,7 +9,7 @@ import os
 import warnings
 from bs4 import XMLParsedAsHTMLWarning
 import google.generativeai as genai
-
+from google.generativeai.types import RequestOptions
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 # =========================
@@ -40,7 +40,10 @@ def call_gemini_ai(prompt):
     try:
         genai.configure(api_key="AIzaSyAG8vfRs4UyMLyyRB3_-EEm1C62BwHohEg")
         model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt)
+        response = model.generate_content
+            (prompt,
+            request_options=RequestOptions(api_version='v1')
+        )
         return response.text
     except Exception as e:
         print(f"AI Error: {e}")
