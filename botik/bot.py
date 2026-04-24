@@ -6,6 +6,7 @@ import time
 import datetime
 import hashlib
 import os
+import urllib.parse
 import warnings
 from bs4 import XMLParsedAsHTMLWarning
 from google import genai
@@ -61,17 +62,11 @@ def call_gemini_ai(prompt):
 
 def generate_ai_image(prompt):
     try:
-        client = genai.Client(api_key=GOOGLE_API_KEY)
-        response = client.models.generate_content(
-            model='gemini-2.5-flash-image',
-            contents=prompt,
+        encoded = urllib.parse.quote(prompt)
+        return (
+            f"https://image.pollinations.ai/prompt/{encoded}"
+            f"?width=1024&height=1024&nologo=true"
         )
-        for part in response.candidates[0].content.parts:
-            inline = getattr(part, "inline_data", None)
-            if inline and inline.data:
-                return inline.data
-        print("⚠️ Nano Banana не повернула зображення, використовую fallback")
-        return FALLBACK_IMAGE_URL
     except Exception as e:
         print(f"Помилка генерації зображення: {e}")
         return FALLBACK_IMAGE_URL
