@@ -40,8 +40,8 @@ def call_gemini_ai(prompt):
     try:
         genai.configure(api_key="AIzaSyAG8vfRs4UyMLyyRB3_-EEm1C62BwHohEg")
         model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content
-            (prompt,
+        response = model.generate_content(
+            prompt,
             request_options=RequestOptions(api_version='v1')
         )
         return response.text
