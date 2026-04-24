@@ -16,9 +16,9 @@ warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 # =========================
 # 🔑 CONFIG
 # =========================
-TELEGRAM_BOT_TOKEN = "8789135346:AAFaM57p_BN7KsZ0IeQFVVgzKGUJTa4gJL8"
-TELEGRAM_CHAT_ID = "467700442"
-GOOGLE_API_KEY = "AIzaSyAG8vfRs4UyMLyyRB3_-EEm1C62BwHohEg"
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+GOOGLE_API_KEY = os.environ["GOOGLE_API_KEY"]
 
 low_priority_news = []
 last_digest_time = time.time()
