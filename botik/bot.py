@@ -6,6 +6,7 @@ import time
 import datetime
 import hashlib
 import os
+import random
 import urllib.parse
 import warnings
 from bs4 import XMLParsedAsHTMLWarning
@@ -38,35 +39,59 @@ def send_photo_to_telegram(photo, caption):
             "caption": caption,
             "parse_mode": "Markdown",
         }
-        return requests.post(url, data=data, files=files)
+        response = requests.post(url, data=data, files=files)
+    else:
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "photo": photo,
+            "caption": caption,
+            "parse_mode": "Markdown",
+        }
+        response = requests.post(url, json=payload)
 
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "photo": photo,
-        "caption": caption,
-        "parse_mode": "Markdown",
-    }
-    return requests.post(url, json=payload)
+    if not response.ok or not response.json().get("ok"):
+        print(f"⚠️ Telegram sendPhoto failed: {response.status_code} {response.text[:300]}")
+    return response
 
 def call_gemini_ai(prompt):
-    try:
-        client = genai.Client(api_key=GOOGLE_API_KEY)
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt
-        )
-        return response.text
-    except Exception as e:
-        print(f"AI Error: {e}")
-        return "Не вдалося згенерувати аналітику ринку."
+    client = genai.Client(api_key=GOOGLE_API_KEY)
+    last_err = None
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt
+            )
+            return response.text
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            transient = any(code in msg for code in ("503", "502", "504", "UNAVAILABLE", "429"))
+            print(f"AI Error (attempt {attempt+1}/3): {e}")
+            if not transient:
+                break
+            if attempt < 2:
+                time.sleep(3 * (attempt + 1))  # 3s, 6s
+    print(f"AI Error final: {last_err}")
+    return "Не вдалося згенерувати аналітику ринку."
 
 def generate_ai_image(prompt):
     try:
         encoded = urllib.parse.quote(prompt)
-        return (
+        seed = random.randint(1, 10_000_000)
+        url = (
             f"https://image.pollinations.ai/prompt/{encoded}"
-            f"?width=1024&height=1024&nologo=true"
+            f"?width=1024&height=1024&nologo=true&seed={seed}"
         )
+        print(f"🎨 Pollinations URL: {url}")
+        r = requests.get(url, timeout=90)
+        r.raise_for_status()
+        ctype = r.headers.get("content-type", "")
+        if not ctype.startswith("image"):
+            print(f"⚠️ Pollinations повернув не картинку (content-type={ctype}), fallback")
+            return FALLBACK_IMAGE_URL
+        print(f"✅ Pollinations завантажив {len(r.content)} байт")
+        return r.content
     except Exception as e:
         print(f"Помилка генерації зображення: {e}")
         return FALLBACK_IMAGE_URL
