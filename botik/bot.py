@@ -9,7 +9,7 @@ import os
 import warnings
 from bs4 import XMLParsedAsHTMLWarning
 import google.generativeai as genai
-from google.generativeai.types import RequestOptions
+
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 # =========================
@@ -40,10 +40,7 @@ def call_gemini_ai(prompt):
     try:
         genai.configure(api_key="AIzaSyAG8vfRs4UyMLyyRB3_-EEm1C62BwHohEg")
         model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(
-            prompt,
-            request_options=RequestOptions(api_version='v1')
-        )
+        response = model.generate_content(prompt)
         return response.text
     except Exception as e:
         print(f"AI Error: {e}")
@@ -51,25 +48,9 @@ def call_gemini_ai(prompt):
 
 def generate_ai_image(prompt):
     try:
-        # Використовуємо налаштовану модель для генерації
-        model = genai.GenerativeModel('image-generation-002')
-        
-        # Додаємо контекст для Nano Banana 2, щоб картинка була професійною
-        full_prompt = f"Professional financial news cover, cinematic trading environment, {prompt}, 8k resolution, high quality"
-        
-        # Виклик генерації (повертає об'єкт з посиланням на зображення)
-        response = model.generate_content(full_prompt)
-        
-        # Припускаємо, що API повертає URL у відповіді
-        # Якщо твоя бібліотека підтримує пряму генерацію посилання:
-        if response.text:
-            # Тут логіка отримання URL залежить від конкретного API Nano Banana 
-            # Зазвичай це виглядає як повернення згенерованого посилання
-            return response.text 
-            
+        return "https://images.unsplash.com/photo-1611974717482-98aa003745fc"
     except Exception as e:
-        print(f"⚠️ Помилка генерації зображення: {e}")
-        # Залишаємо Unsplash як запасний варіант (fallback)
+        print(f"Помилка: {e}")
         return "https://images.unsplash.com/photo-1611974717482-98aa003745fc"
 
 from bs4 import BeautifulSoup
