@@ -8,7 +8,7 @@ import hashlib
 import os
 import warnings
 from bs4 import XMLParsedAsHTMLWarning
-import google.generativeai as genai
+from google import genai
 
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
@@ -38,9 +38,11 @@ def send_photo_to_telegram(photo_url, caption):
 
 def call_gemini_ai(prompt):
     try:
-        genai.configure(api_key="AIzaSyAG8vfRs4UyMLyyRB3_-EEm1C62BwHohEg")
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt)
+        client = genai.Client(api_key="AIzaSyAG8vfRs4UyMLyyRB3_-EEm1C62BwHohEg")
+        response = client.models.generate_content(
+            model='gemini-1.5-flash',
+            contents=prompt
+        )
         return response.text
     except Exception as e:
         print(f"AI Error: {e}")
