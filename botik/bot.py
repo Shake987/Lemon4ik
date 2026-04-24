@@ -25,22 +25,33 @@ posted_news = set()
 posted_events = set()
 
 
-def send_photo_to_telegram(photo_url, caption):
+FALLBACK_IMAGE_URL = "https://images.unsplash.com/photo-1611974717482-98aa003745fc"
+
+
+def send_photo_to_telegram(photo, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    if isinstance(photo, (bytes, bytearray)):
+        files = {"photo": ("image.png", photo, "image/png")}
+        data = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "caption": caption,
+            "parse_mode": "Markdown",
+        }
+        return requests.post(url, data=data, files=files)
+
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "photo": photo_url,
+        "photo": photo,
         "caption": caption,
-        "parse_mode": "Markdown"
+        "parse_mode": "Markdown",
     }
-    response = requests.post(url, json=payload)
-    return response
+    return requests.post(url, json=payload)
 
 def call_gemini_ai(prompt):
     try:
-        client = genai.Client(api_key="AIzaSyAG8vfRs4UyMLyyRB3_-EEm1C62BwHohEg")
+        client = genai.Client(api_key=GOOGLE_API_KEY)
         response = client.models.generate_content(
-            model='gemini-pro',
+            model='gemini-2.5-flash',
             contents=prompt
         )
         return response.text
@@ -50,10 +61,20 @@ def call_gemini_ai(prompt):
 
 def generate_ai_image(prompt):
     try:
-        return "https://images.unsplash.com/photo-1611974717482-98aa003745fc"
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+        response = client.models.generate_content(
+            model='gemini-2.5-flash-image',
+            contents=prompt,
+        )
+        for part in response.candidates[0].content.parts:
+            inline = getattr(part, "inline_data", None)
+            if inline and inline.data:
+                return inline.data
+        print("⚠️ Nano Banana не повернула зображення, використовую fallback")
+        return FALLBACK_IMAGE_URL
     except Exception as e:
-        print(f"Помилка: {e}")
-        return "https://images.unsplash.com/photo-1611974717482-98aa003745fc"
+        print(f"Помилка генерації зображення: {e}")
+        return FALLBACK_IMAGE_URL
 
 from bs4 import BeautifulSoup
 
