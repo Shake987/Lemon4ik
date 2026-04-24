@@ -208,30 +208,48 @@ def send_low_priority_digest():
         print("DEBUG: Новин реально немає")
         return
 
+    summary = "Не вдалося згенерувати аналітику ринку."
+    market_mood = "Neutral"
     try:
         news_text = "\n".join(low_priority_news)
-        prompt = f"Зроби стислий аналітичний підсумок цих новин для трейдерів. Який загальний фон вони створюють? Список новин:\n{news_text}"
-    
-        print("DEBUG: Запит до ШІ...") # КРОК 2
-        summary = call_gemini_ai(prompt)
-        print(f"DEBUG: ШІ відповів (перші 20 символів): {summary[:20]}") # КРОК 3
-    
-        mood_prompt = f"Зроби стислий аналіз фону (Bullish, Bearish чи Neutral) для цих новин. Дай відповідь одним словом. Новини: {summary[:100]}"
-        market_mood = call_gemini_ai(mood_prompt).strip() # Наприклад: Bullish
+        prompt = (
+            "Проаналізуй ці новини для трейдерів. Поверни відповідь СУВОРО в такому форматі (дві частини):\n"
+            "MOOD: <одне слово: Bullish, Bearish або Neutral>\n"
+            "SUMMARY: <стислий аналітичний підсумок українською, 3-5 речень, загальний фон для ринку>\n\n"
+            f"Список новин:\n{news_text}"
+        )
 
+        print("DEBUG: Запит до ШІ...")
+        ai_response = call_gemini_ai(prompt)
+        print(f"DEBUG: ШІ відповів (перші 80): {ai_response[:80]}")
+
+        for line in ai_response.splitlines():
+            if line.strip().upper().startswith("MOOD:"):
+                mood_val = line.split(":", 1)[1].strip().rstrip(".")
+                if mood_val in ("Bullish", "Bearish", "Neutral"):
+                    market_mood = mood_val
+                    break
+        if "SUMMARY:" in ai_response:
+            summary = ai_response.split("SUMMARY:", 1)[1].strip()
+        elif ai_response and not ai_response.startswith("Не вдалося"):
+            summary = ai_response.strip()
     except Exception as e:
         print(f"❌ Помилка на етапі ШІ: {e}")
-        market_mood = "Neutral"
-    
+
     if market_mood == "Bullish":
         image_prompt = "modern minimalist wood desk with dark-mode MacBook display showing green abstract bar charts, ceramic mug with Bull icon, cityscape twilight background, soft natural lighting"
     else:
         image_prompt = "sleek dark-mode financial terminal graphics with deep blues and grays, vibrant neon green and red candlestick and smoothness index lines, professional trading style"
 
-    # 3. Викликаємо реальну генерацію картинки через Nano Banana 2
     image_url = generate_ai_image(image_prompt)
 
-    post_text = f"📊 **DAILY MARKET SUMMARY (Low Impact)**\n\n{summary}\n\n#DailyDigest #MarketUpdate"
+    # Telegram sendPhoto caption limit = 1024 chars
+    prefix = "📊 **DAILY MARKET SUMMARY (Low Impact)**\n\n"
+    suffix = "\n\n#DailyDigest #MarketUpdate"
+    budget = 1024 - len(prefix) - len(suffix) - 3
+    if len(summary) > budget:
+        summary = summary[:budget].rstrip() + "..."
+    post_text = prefix + summary + suffix
     
     print("DEBUG: Намагаємось відправити в Телеграм...") # КРОК 4
     
@@ -786,7 +804,7 @@ def main():
                 print("Error:", e)
 
             now_ts = time.time()
-            if (now_ts - last_digest_time > 600) or (len(low_priority_news) >= 5):
+            if (now_ts - last_digest_time > 3600) or (len(low_priority_news) >= 30):
                 if low_priority_news:
                     print(f"⏰ Generating digest for {len(low_priority_news)} news...")
                     send_low_priority_digest() # Твоя функція з AI
