@@ -53,25 +53,38 @@ def send_photo_to_telegram(photo, caption):
         print(f"⚠️ Telegram sendPhoto failed: {response.status_code} {response.text[:300]}")
     return response
 
+GEMINI_MODELS = [
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
+    'gemini-2.0-flash',
+]
+
+
 def call_gemini_ai(prompt):
     client = genai.Client(api_key=GOOGLE_API_KEY)
     last_err = None
-    for attempt in range(3):
-        try:
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt
-            )
-            return response.text
-        except Exception as e:
-            last_err = e
-            msg = str(e)
-            transient = any(code in msg for code in ("503", "502", "504", "UNAVAILABLE", "429"))
-            print(f"AI Error (attempt {attempt+1}/3): {e}")
-            if not transient:
-                break
-            if attempt < 2:
-                time.sleep(3 * (attempt + 1))  # 3s, 6s
+    for model in GEMINI_MODELS:
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                )
+                return response.text
+            except Exception as e:
+                last_err = e
+                msg = str(e)
+                transient = any(code in msg for code in ("503", "502", "504", "UNAVAILABLE", "429"))
+                not_found = "404" in msg
+                print(f"AI Error [{model}] attempt {attempt+1}: {e}")
+                if not transient and not not_found:
+                    # permanent (auth, quota, bad request) — бесполезно продолжать
+                    print(f"AI Error final: {last_err}")
+                    return "Не вдалося згенерувати аналітику ринку."
+                if transient and attempt == 0:
+                    time.sleep(3)
+                    continue
+                break  # перехід до наступної моделі
     print(f"AI Error final: {last_err}")
     return "Не вдалося згенерувати аналітику ринку."
 
