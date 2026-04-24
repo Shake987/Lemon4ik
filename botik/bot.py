@@ -40,7 +40,7 @@ def call_gemini_ai(prompt):
     try:
         client = genai.Client(api_key="AIzaSyAG8vfRs4UyMLyyRB3_-EEm1C62BwHohEg")
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-pro',
             contents=prompt
         )
         return response.text
