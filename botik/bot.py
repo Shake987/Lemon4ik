@@ -26,7 +26,7 @@ last_digest_time = time.time()
 posted_news = set()
 posted_events = set()
 
-DIGEST_HOURS = [9, 13, 17, 21]  # Години для відправки
+DIGEST_HOURS = [9, 13, 14, 17, 21]  # Години для відправки
 last_sent_hour = -1
 
 
@@ -512,7 +512,7 @@ MEDIUM_IMPACT = [
 ]
 
 def main():
-    global low_priority_news, last_digest_time, posted_news, posted_events
+    global low_priority_news, last_digest_time, posted_news, posted_events, last_sent_hour
     
     recent_titles = []
     last_post_time = 0
