@@ -221,8 +221,8 @@ def send_low_priority_digest():
     summary = "Не вдалося згенерувати аналітику ринку."
     market_mood = "Neutral"
     try:
-        recent_news = low_priority_news[-30:]
-        news_text = "\n".join(low_priority_news)
+        recent_news = [n[:200] for n in low_priority_news[-30:]]
+        news_text = "\n".join(recent_news)
         prompt = (
             "Проаналізуй ці новини для трейдерів. Поверни відповідь СУВОРО в такому форматі (дві частини):\n"
             "MOOD: <одне слово: Bullish, Bearish або Neutral>\n"
