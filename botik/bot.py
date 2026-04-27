@@ -787,7 +787,6 @@ def main():
             else: # low
                 low_priority_news.append(f"🔹 {clean_title}")
                 continue
-                
 
             try:
                 time.sleep(4)
