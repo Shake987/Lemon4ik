@@ -787,6 +787,14 @@ def main():
                 
 
             try:
+                ai_prompt = (
+                    f"Analyze this financial news: {post_text}\n"
+                    "Provide a very short summary (1 sentence) in Ukrainian explaining the core essence for traders."
+                    "Return ONLY the Ukrainian sentence."
+                )
+                summary_ua = call_gemini_ai(ai_prompt)
+                if summary_ua.startswith("Не вдалося"):
+                    summary_ua = "Короткий аналіз недоступний."
                 assets = SIGNAL_IMPACT.get(signal, {})
                 assets_text = " | ".join([
                     f"{ASSET_EMOJI.get(k, '')} {k} {ARROW_EMOJI.get(v, v)}"
@@ -800,18 +808,20 @@ def main():
 
                 confidence = min(confidence, 100)
 
-                post = f"""🚨 Macro Update
+                post = f"""🚨 **Macro Update**
 
-                Signal: {signal_icon} {signal.upper()} ({confidence}% {confidence_label})
-                Impact: {impact}
+Signal: {signal_icon} {signal.upper()} ({confidence}% {confidence_label})
+Impact: {impact}
 
-                Category: {category.upper()}
-            
-                {post_text}
+Category: {category.upper()}
 
-                Assets:
-               {assets_text}
-               """
+{post_text}
+
+🇺🇦 **Суть:** {summary_ua}
+
+Assets:
+{assets_text}
+"""
 
                 if impact != "HIGH" and any(title[:50] in t for t in recent_titles):
                     continue
