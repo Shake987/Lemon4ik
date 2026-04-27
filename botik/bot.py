@@ -77,6 +77,7 @@ def call_gemini_ai(prompt):
             except Exception as e:
                 last_err = e
                 msg = str(e)
+                is_rate_limit = "429" in msg
                 transient = any(code in msg for code in ("503", "502", "504", "UNAVAILABLE", "429"))
                 not_found = "404" in msg
                 print(f"AI Error [{model}] attempt {attempt+1}: {e}")
@@ -85,7 +86,9 @@ def call_gemini_ai(prompt):
                     print(f"AI Error final: {last_err}")
                     return "Не вдалося згенерувати аналітику ринку."
                 if transient and attempt == 0:
-                    time.sleep(3)
+                    wait_time = 20 if is_rate_limit else 3
+                    print(f"Waiting {wait_time}s before retry...")
+                    time.sleep(wait_time)
                     continue
                 break  # перехід до наступної моделі
     print(f"AI Error final: {last_err}")
@@ -787,6 +790,7 @@ def main():
                 
 
             try:
+                time.sleep(4)
                 ai_prompt = (
                     f"Analyze this financial news: {post_text}\n"
                     "Provide a very short summary (1 sentence) in Ukrainian explaining the core essence for traders."
