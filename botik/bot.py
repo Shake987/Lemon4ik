@@ -206,6 +206,10 @@ def send_low_priority_digest():
     global low_priority_news, last_digest_time
     
     print(f"DEBUG: Зайшли. У списку зараз: {len(low_priority_news)} новин")
+
+    if len(low_priority_news) > 100:
+        print(f"🧹 Забагато сміття ({len(low_priority_news)}). Очищуємо список...")
+        low_priority_news = low_priority_news[-50:]
     
     if not low_priority_news:
         print("DEBUG: Новин реально немає")
@@ -214,6 +218,7 @@ def send_low_priority_digest():
     summary = "Не вдалося згенерувати аналітику ринку."
     market_mood = "Neutral"
     try:
+        recent_news = low_priority_news[-30:]
         news_text = "\n".join(low_priority_news)
         prompt = (
             "Проаналізуй ці новини для трейдерів. Поверни відповідь СУВОРО в такому форматі (дві частини):\n"
