@@ -787,31 +787,44 @@ def main():
             else: # low
                 low_priority_news.append(f"🔹 {clean_title}")
                 continue
-
-            try:
-                time.sleep(4)
-                ai_prompt = (
-                    f"Analyze this financial news: {post_text}\n"
-                    "Provide a very short summary (1 sentence) in Ukrainian explaining the core essence for traders."
-                    "Return ONLY the Ukrainian sentence."
-                )
-                summary_ua = call_gemini_ai(ai_prompt)
-                if summary_ua.startswith("Не вдалося"):
+            summary_ua = ""
+            # Перевіряємо, чи це важлива новина (червоний круг)
+            if tier == "high":
+                try:
+                    time.sleep(4)
+                    ai_prompt = (
+                        f"Analyze this financial news: {post_text}\n"
+                        "Provide a very short summary (1 sentence) in Ukrainian explaining the core essence for traders."
+                        "Return ONLY the Ukrainian sentence."
+                    )
+                    summary_ua = call_gemini_ai(ai_prompt)
+                    if summary_ua.startswith("Не вдалося"):
+                        summary_ua = "Короткий аналіз недоступний."
+                except Exception as e:
+                    print(f"Error calling AI for high impact: {e}")
                     summary_ua = "Короткий аналіз недоступний."
-                assets = SIGNAL_IMPACT.get(signal, {})
-                assets_text = " | ".join([
-                    f"{ASSET_EMOJI.get(k, '')} {k} {ARROW_EMOJI.get(v, v)}"
-                    for k, v in assets.items()
-                ])
-                
-                if not assets_text:
-                    assets_text = "No clear signal"
+            else:
+                # Для Medium та Low не викликаємо ШІ, щоб зберегти квоту
+                summary_ua = "" 
 
-                signal_icon = SIGNAL_EMOJI.get(signal, "")
+            # Формуємо активи та іконки (це залишаємо)
+            assets = SIGNAL_IMPACT.get(signal, {})
+            assets_text = " | ".join([
+                f"{ASSET_EMOJI.get(k, '')} {k} {ARROW_EMOJI.get(v, v)}"
+                for k, v in assets.items()
+            ])
+            
+            if not assets_text:
+                assets_text = "No clear signal"
 
-                confidence = min(confidence, 100)
+            signal_icon = SIGNAL_EMOJI.get(signal, "")
+            confidence = min(confidence, 100)
 
-                post = f"""🚨 **Macro Update**
+            # 2. ОНОВЛЕННЯ ШАБЛОНУ (Пункт 2)
+            # Додаємо секцію "Суть" тільки якщо вона не порожня (тобто тільки для HIGH)
+            ua_section = f"\n🗣 {summary_ua}\n" if summary_ua else ""
+
+            post = f"""🚨 **Macro Update**
 
 Signal: {signal_icon} {signal.upper()} ({confidence}% {confidence_label})
 Impact: {impact}
@@ -819,9 +832,7 @@ Impact: {impact}
 Category: {category.upper()}
 
 {post_text}
-
-🇺🇦 **Суть:** {summary_ua}
-
+{ua_section}
 Assets:
 {assets_text}
 """
