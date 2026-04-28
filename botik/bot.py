@@ -86,7 +86,7 @@ def call_gemini_ai(prompt):
                     print(f"AI Error final: {last_err}")
                     return "Не вдалося згенерувати аналітику ринку."
                 if transient and attempt == 0:
-                    wait_time = 20 if is_rate_limit else 3
+                    wait_time = 20 if is_rate_limit else 15
                     print(f"Waiting {wait_time}s before retry...")
                     time.sleep(wait_time)
                     continue
@@ -791,7 +791,7 @@ def main():
             # Перевіряємо, чи це важлива новина (червоний круг)
             if tier == "high":
                 try:
-                    time.sleep(4)
+                    time.sleep(10)
                     ai_prompt = (
                         f"Analyze this financial news: {post_text}\n"
                         "Provide a very short summary (1 sentence) in Ukrainian explaining the core essence for traders."
