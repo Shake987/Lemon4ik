@@ -837,19 +837,19 @@ Assets:
 {assets_text}
 """
 
-                if impact != "HIGH" and any(title[:50] in t for t in recent_titles):
-                    continue
+            if impact != "HIGH" and any(title[:50] in t for t in recent_titles):
+                continue
                 
-                send_to_telegram(post)
-                last_post_time = time.time()
+            send_to_telegram(post)
+            last_post_time = time.time()
 
-                posted_news.add(news_id)
-                recent_titles.append(title.lower())
+            posted_news.add(news_id)
+            recent_titles.append(title.lower())
 
-                if len(recent_titles) > 20:
-                    recent_titles.pop(0)
+            if len(recent_titles) > 20:
+                recent_titles.pop(0)
 
-                print("Posted:", title)
+            print("Posted:", title)
 
             except Exception as e:
                 print("Error:", e)
