@@ -780,15 +780,20 @@ def main():
                 pass # Пропускаємо до публікації негайно
         
             elif tier == "medium":
-                if time_since_last < 600: # 10 хвилин
+                if time_since_last < 1200: # 10 хвилин
                     low_priority_news.append(f"🟡 {clean_title}")
+                    print(f"Medium added to digest (last post was {int(time_since_last)}s ago)")
                     continue
+                else:
+                    # Якщо канал мовчав більше 20 хв — дозволяємо Medium
+                    print(f"Channel is silent for {int(time_since_last)}s. Allowing Medium news.")
+                    pass
         
             else: # low
                 low_priority_news.append(f"🔹 {clean_title}")
                 continue
+            
             summary_ua = ""
-            # Перевіряємо, чи це важлива новина (червоний круг)
             if tier == "high":
                 try:
                     time.sleep(10)
@@ -798,11 +803,12 @@ def main():
                         "Return ONLY the Ukrainian sentence."
                     )
                     summary_ua = call_gemini_ai(ai_prompt)
-                    if summary_ua.startswith("Не вдалося"):
-                        summary_ua = "Короткий аналіз недоступний."
+                    
+                    if not summary_ua or "Не вдалося" in summary_ua:
+                        summary_ua = ""
                 except Exception as e:
-                    print(f"Error calling AI for high impact: {e}")
-                    summary_ua = "Короткий аналіз недоступний."
+                    print(f"AI Error: {e}")
+                    summary_ua = ""
             else:
                 # Для Medium та Low не викликаємо ШІ, щоб зберегти квоту
                 summary_ua = "" 
