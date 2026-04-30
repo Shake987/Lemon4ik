@@ -680,8 +680,25 @@ def main():
                 # 🚫 АНТИ-ДУБЛІКАТИ
                 news_id = hashlib.md5(title.encode()).hexdigest()
 
+                raw_summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
+                has_actual = "Actual" in raw_summary or "actual" in raw_summary.lower()
+
                 if news_id in posted_news:
-                    continue     
+                    # Якщо ми вже постили цей ID, але зараз з'явився Actual — даємо шанс
+                    if has_actual:
+                        actual_id = f"{news_id}_actual"
+                        # Перевіряємо, чи ми вже постили цей конкретний Actual
+                        if actual_id in posted_news:
+                            continue 
+                        else:
+                            # Це нові дані! Міняємо ID на 'actual' версію і йдемо далі
+                            news_id = actual_id
+                    else:
+                        # Це звичайний дублікат без нових цифр — скипаємо
+                        continue
+                
+                # Додаємо ID в список опублікованих (це важливо для збереження стану)
+                posted_news.add(news_id)     
 
 
             # 🔥 СИГНАЛ
@@ -779,6 +796,7 @@ def main():
 
             if tier == "high":
                 last_post_time = time.time() # Пропускаємо до публікації негайно
+                posted_news.add(news_id)
         
             elif tier == "medium":
                 if time_since_last < 1200: 
@@ -786,7 +804,8 @@ def main():
                     print(f"Medium added to digest (last post was {int(time_since_last)}s ago)")
                     continue
                 else:
-                    last_post_time = time.time() 
+                    last_post_time = time.time()
+                    posted_news.add(news_id)
                     print(f"Channel is silent for {int(time_since_last)}s. Allowing Medium news.")
         
             else: # low
