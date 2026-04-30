@@ -439,6 +439,9 @@ Crypto (↑/↓/~)
 
     return response.choices[0].message.content
 
+last_post_time = 0
+recent_titles = []
+
 # =========================
 # 🔁 MAIN LOOP
 # =========================
@@ -520,10 +523,8 @@ MEDIUM_IMPACT = [
 ]
 
 def main():
-    global low_priority_news, last_digest_time, posted_news, posted_events, last_sent_hour
+    global last_post_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_hour
     
-    recent_titles = []
-    last_post_time = 0
     last_update = 0
     events = []
     while True:
@@ -652,13 +653,13 @@ def main():
                 title_up = title.upper()
         
                 if any(word in title_up for word in ["FED", "RATE", "CPI", "INFLATION", "FOMC", "URGENT", "BREAKING"]):
-                    impact = "🔴 HIGH"
+                    impact = "HIGH"
             
                 elif any(word in title_up for word in ["MARKET", "BANK", "REPORT", "ECONOMY", "GROWTH", "JOB", "OUTLOOK", "STOCKS", "ANALYSIS"]):
-                    impact = "🟡 MEDIUM"
+                    impact = "MEDIUM"
             
                 else:
-                    impact = "🟢 LOW"
+                    impact = "LOW"
 
                 # 🔍 НОВИЙ БЛОК: ФІЛЬТР ПО КЛЮЧОВИМ СЛОВАМ 
 
@@ -672,7 +673,7 @@ def main():
             ]
                 
                 is_relevant = any(word in title for word in keywords)
-                if not is_relevant and impact != "🔴 HIGH":
+                if not is_relevant and impact != "HIGH":
                     low_priority_news.append(f"⚪️ {clean_title}")
                     continue
 
@@ -733,8 +734,8 @@ def main():
             confidence = 50  # база 
 
             if signal in ["hawkish", "dovish"]: confidence += 20
-            if impact == "🔴 HIGH": confidence += 25
-            elif impact == "🟡 MEDIUM": confidence += 15
+            if impact == "HIGH": confidence += 25
+            elif impact == "MEDIUM": confidence += 15
 
             confidence += abs(signal_score) * 5
 
@@ -749,7 +750,7 @@ def main():
             
             # 🔥 TIER LOGIC
 
-            if impact == "🔴 HIGH" or confidence >= 75:
+            if impact == "HIGH" or confidence >= 75:
                 tier = "high"
             elif confidence >= 60:
                 tier = "medium"
@@ -777,17 +778,16 @@ def main():
             time_since_last = current_time - last_post_time
 
             if tier == "high":
-                pass # Пропускаємо до публікації негайно
+                last_post_time = time.time() # Пропускаємо до публікації негайно
         
             elif tier == "medium":
-                if time_since_last < 1200: # 10 хвилин
+                if time_since_last < 1200: 
                     low_priority_news.append(f"🟡 {clean_title}")
                     print(f"Medium added to digest (last post was {int(time_since_last)}s ago)")
                     continue
                 else:
-                    # Якщо канал мовчав більше 20 хв — дозволяємо Medium
+                    last_post_time = time.time() 
                     print(f"Channel is silent for {int(time_since_last)}s. Allowing Medium news.")
-                    pass
         
             else: # low
                 low_priority_news.append(f"🔹 {clean_title}")
@@ -830,10 +830,15 @@ def main():
             # Додаємо секцію "Суть" тільки якщо вона не порожня (тобто тільки для HIGH)
             ua_section = f"\n🗣 {summary_ua}\n" if summary_ua else ""
 
+            display_impact = impact
+            if impact == "HIGH": display_impact = "🔴 HIGH"
+            elif impact == "MEDIUM": display_impact = "🟡 MEDIUM"
+            elif impact == "LOW": display_impact = "🟢 LOW"
+
             post = f"""🚨 **Macro Update**
 
 Signal: {signal_icon} {signal.upper()} ({confidence}% {confidence_label})
-Impact: {impact}
+Impact: {display_impact}
 
 Category: {category.upper()}
 
