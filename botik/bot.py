@@ -795,7 +795,14 @@ def main():
             time_since_last = current_time - last_post_time
 
             if tier == "high":
-                last_post_time = time.time() # Пропускаємо до публікації негайно
+                if news_id in posted_news:
+                    raw_summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
+                    if "Actual" in raw_summary and f"{news_id}_actual" not in posted_news:
+                        news_id = f"{news_id}_actual"
+                    else:
+                        continue
+
+                last_post_time = time.time()
                 posted_news.add(news_id)
         
             elif tier == "medium":
