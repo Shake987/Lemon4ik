@@ -26,6 +26,10 @@ last_digest_time = time.time()
 posted_news = set()
 posted_events = set()
 
+# pre_event_id -> {"check_at": ts, "retries": int}
+# Точкова перевірка ForexFactory після події (для отримання Actual)
+pending_actual_fetches = {}
+
 DIGEST_HOURS = [9, 13, 14, 17, 21]  # Години для відправки
 last_sent_hour = -1
 
@@ -35,26 +39,31 @@ FALLBACK_IMAGE_URL = "https://images.unsplash.com/photo-1611974717482-98aa003745
 
 def send_photo_to_telegram(photo, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-    if isinstance(photo, (bytes, bytearray)):
-        files = {"photo": ("image.png", photo, "image/png")}
-        data = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "caption": caption,
-            "parse_mode": "Markdown",
-        }
-        response = requests.post(url, data=data, files=files)
-    else:
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "photo": photo,
-            "caption": caption,
-            "parse_mode": "Markdown",
-        }
-        response = requests.post(url, json=payload)
+    try:
+        if isinstance(photo, (bytes, bytearray)):
+            files = {"photo": ("image.png", photo, "image/png")}
+            data = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "caption": caption,
+                "parse_mode": "Markdown",
+            }
+            response = requests.post(url, data=data, files=files, timeout=30)
+        else:
+            payload = {
+                "chat_id": TELEGRAM_CHAT_ID,
+                "photo": photo,
+                "caption": caption,
+                "parse_mode": "Markdown",
+            }
+            response = requests.post(url, json=payload, timeout=30)
+    except Exception as e:
+        print(f"⚠️ Telegram sendPhoto exception: {e}")
+        return False
 
     if not response.ok or not response.json().get("ok"):
         print(f"⚠️ Telegram sendPhoto failed: {response.status_code} {response.text[:300]}")
-    return response
+        return False
+    return True
 
 GEMINI_MODELS = [
     'gemini-2.5-flash',
@@ -216,7 +225,7 @@ def send_low_priority_digest():
     
     if not low_priority_news:
         print("DEBUG: Новин реально немає")
-        return
+        return False
 
     summary = "Не вдалося згенерувати аналітику ринку."
     market_mood = "Neutral"
@@ -249,7 +258,7 @@ def send_low_priority_digest():
 
     if summary == "Не вдалося згенерувати аналітику ринку." or not summary.strip():
         print("⚠️ ШІ не видав результат. Скасовуємо пост, щоб не слати порожнє повідомлення.")
-        return  # Зупиняємо функцію, новини не видаляються і чекають наступного разу
+        return False  # Новини залишаються до наступного слоту
 
     if market_mood == "Bullish":
         image_prompt = (
@@ -281,26 +290,20 @@ def send_low_priority_digest():
         summary = summary[:budget].rstrip() + "..."
     post_text = prefix + summary + suffix
     
-    print("DEBUG: Намагаємось відправити в Телеграм...") # КРОК 4
-    
-    # Відправляємо в Телеграм (фото + текст)
-    try:
-        # Спробуємо відправити через твою функцію
-        send_photo_to_telegram(image_url, post_text)
-        print("✅ Дайджест успішно відправлено!")
-    except Exception as e:
-        # Цей блок "спіймає" помилку і виведе її в логи Railway
-        print(f"❌ ПОМИЛКА ТЕЛЕГРАМУ: {e}")
-        try:
-            # Спробуємо відправити хоча б текст без картинки
-            # send_message_to_telegram(post_text) # якщо така функція є
-            print("⚠️ Спроба відправки тексту без фото...")
-        except:
-            pass
-    
-    # Очищуємо чернетку
+    print("DEBUG: Намагаємось відправити в Телеграм...")
+
+    telegram_ok = send_photo_to_telegram(image_url, post_text)
+
+    if not telegram_ok:
+        print("❌ Telegram не доставив дайджест. Новини залишаються до наступного слоту.")
+        return False
+
+    print("✅ Дайджест успішно відправлено!")
+
+    # Очищуємо чернетку тільки після підтвердженої доставки
     low_priority_news = []
     last_digest_time = time.time()
+    return True
 
 # 🔥 SCENARIO ENGINE
 def get_scenario(title):
@@ -487,25 +490,26 @@ MEDIUM_IMPACT = [
 ]
 
 def main():
-    global last_post_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_hour
-    
+    global last_post_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_hour, pending_actual_fetches
+
     last_update = 0
     events = []
     while True:
-        
+
         now_ts = time.time()
-    
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+
         # 🟢 1. FOREX FACTORY (CALENDAR)
-        
-        # 🔄 оновлення раз на 15 хв
-        if now_ts - last_update > 900 or any(
-            0 < (e["time"] - datetime.datetime.now(datetime.timezone.utc)).total_seconds()/60 < 3
-            for e in events
-        ):
+        # Оновлюємо у двох випадках:
+        #   1) Раз на 15 хв — для свіжого календаря майбутніх подій
+        #   2) Точкова перевірка після події — коли наступила запланована pending_actual_fetches[id]["check_at"]
+        due_pre_ids = [pid for pid, info in pending_actual_fetches.items() if now_ts >= info["check_at"]]
+
+        if now_ts - last_update > 900 or due_pre_ids:
+            if due_pre_ids:
+                print(f"🔄 Точковий фетч ForexFactory (за Actual для {len(due_pre_ids)} подій)")
             events = get_forexfactory_events()
             last_update = now_ts
-        else:
-            pass
 
         for event in events:
             scenario = ""
@@ -544,8 +548,15 @@ def main():
                     post = f"⏳ Upcoming Event ({int(minutes_to_event)} min)\n\nEvent: {title.upper()}\nCurrency: {currency}\nImpact: {impact.upper()}\n\n🧠 Scenarios:\n{scenario}"
                     send_to_telegram(post)
                     posted_events.add(event_id)
-                    print("⏳ Sent PRE event:", title)
-                continue 
+                    # Плануємо точковий фетч на T+4 хв після події (для отримання Actual)
+                    is_speech = "speak" in title.lower() or "testif" in title.lower()
+                    if not is_speech:
+                        pending_actual_fetches[event_id] = {
+                            "check_at": event_time.timestamp() + 240,
+                            "retries": 0,
+                        }
+                    print(f"⏳ Sent PRE event: {title} (fact check at +4min)")
+                continue
 
             # --- 4. 🔥 MAIN NEWS ЛОГІКА (Момент виходу) ---
             # Перевіряємо в діапазоні від -20 хв до +2 хв
@@ -580,8 +591,25 @@ def main():
                 post = f"🚨 Economic Release\n\nEvent: {title.upper()}\nCurrency: {currency}\n\nActual: {actual}\nForecast: {forecast}\nPrevious: {previous}\n\n{result}\n\n{move}"
                 send_to_telegram(post)
                 posted_events.add(event_id)
-                print("📅 Sent MAIN event:", title)   
-            
+                # Прибираємо з черги — Actual отримали і опублікували
+                pre_id = (title + currency + impact + "_PRE").strip()
+                pending_actual_fetches.pop(pre_id, None)
+                print("📅 Sent MAIN event:", title)
+
+        # 🧹 Догляд за чергою точкових фетчів:
+        #   - Якщо перевірка пройшла, але Actual ще не з'явився → 1 retry через 6 хв (~T+10)
+        #   - Якщо retry вже зроблено або подія старша 30 хв → видаляємо
+        for pid in list(pending_actual_fetches.keys()):
+            info = pending_actual_fetches[pid]
+            if now_ts >= info["check_at"]:
+                if info["retries"] < 1:
+                    info["retries"] += 1
+                    info["check_at"] = now_ts + 360  # ще одна спроба за 6 хв
+                    print(f"⏳ Actual ще не з'явився для {pid[:40]}... retry за 6 хв")
+                else:
+                    print(f"❌ Здаємось на Actual для {pid[:40]}")
+                    del pending_actual_fetches[pid]
+
         # =========================
         # 🔵 2. RSS NEWS
         # =========================
@@ -845,11 +873,14 @@ Assets:
             if len(low_priority_news) >= 10:
                 print(f"⏰ Час дайджесту ({current_hour}:00)! Новин: {len(low_priority_news)}")
 
-                send_low_priority_digest()
+                success = send_low_priority_digest()
 
-                low_priority_news.clear()
-                last_sent_hour = current_hour
-                print("DEBUG: Список новин очищено.")
+                if success:
+                    low_priority_news.clear()
+                    last_sent_hour = current_hour
+                    print("DEBUG: Дайджест відправлено, список очищено.")
+                else:
+                    print(f"⚠️ Дайджест НЕ відправлено (ШІ/Telegram не відповів). Новини збережено до наступного слоту.")
             else:
                 print(f"⏳ Час {current_hour}:00 підійшов, але новин мало ({len(low_priority_news)}/10). Чекаємо.")
 
