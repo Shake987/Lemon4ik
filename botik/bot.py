@@ -66,13 +66,24 @@ def send_photo_to_telegram(photo, caption):
     return True
 
 GEMINI_MODELS = [
+    'gemini-2.5-flash-lite',  # дешевший first — економимо кредити
     'gemini-2.5-flash',
-    'gemini-2.5-flash-lite',
     'gemini-2.0-flash',
 ]
 
+# Circuit breaker — час до якого Gemini вважається недоступним
+gemini_blocked_until = 0
+
 
 def call_gemini_ai(prompt):
+    global gemini_blocked_until
+
+    # Якщо кредити вичерпано — пропускаємо без виклику API (економимо час і гроші)
+    if time.time() < gemini_blocked_until:
+        remaining = int(gemini_blocked_until - time.time())
+        print(f"⏭ Gemini заблокований ще {remaining}с (квота). Пропускаємо запит.")
+        return "Не вдалося згенерувати аналітику ринку."
+
     client = genai.Client(api_key=GOOGLE_API_KEY)
     last_err = None
     for model in GEMINI_MODELS:
@@ -86,16 +97,28 @@ def call_gemini_ai(prompt):
             except Exception as e:
                 last_err = e
                 msg = str(e)
-                is_rate_limit = "429" in msg
-                transient = any(code in msg for code in ("503", "502", "504", "UNAVAILABLE", "429"))
+                msg_lower = msg.lower()
+                is_quota_depleted = (
+                    "resource_exhausted" in msg_lower
+                    or "credits are depleted" in msg_lower
+                    or "prepayment" in msg_lower
+                )
+                is_rate_limit = "429" in msg and not is_quota_depleted
+                transient = any(code in msg for code in ("503", "502", "504", "UNAVAILABLE")) or is_rate_limit
                 not_found = "404" in msg
                 print(f"AI Error [{model}] attempt {attempt+1}: {e}")
+
+                # Кредити вичерпано — блокуємо звернення на 30 хв і виходимо одразу
+                if is_quota_depleted:
+                    gemini_blocked_until = time.time() + 1800
+                    print("⛔ Gemini кредити вичерпано. Блокуємо звернення на 30 хв (запобіжник).")
+                    return "Не вдалося згенерувати аналітику ринку."
+
                 if not transient and not not_found:
-                    # permanent (auth, quota, bad request) — бесполезно продолжать
                     print(f"AI Error final: {last_err}")
                     return "Не вдалося згенерувати аналітику ринку."
                 if transient and attempt == 0:
-                    wait_time = 20 if is_rate_limit else 15
+                    wait_time = 15
                     print(f"Waiting {wait_time}s before retry...")
                     time.sleep(wait_time)
                     continue
