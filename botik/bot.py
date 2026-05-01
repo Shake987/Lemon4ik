@@ -430,6 +430,7 @@ def send_to_telegram(message):
     requests.post(url, json=payload)
 
 last_post_time = 0
+last_medium_time = 0  # окремий лічильник для Medium 30-хв тротлінгу
 recent_titles = []
 
 # =========================
@@ -513,7 +514,7 @@ MEDIUM_IMPACT = [
 ]
 
 def main():
-    global last_post_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_hour, pending_actual_fetches
+    global last_post_time, last_medium_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_hour, pending_actual_fetches
 
     last_update = 0
     events = []
@@ -773,14 +774,7 @@ def main():
                 if any(word in title for word in strong_words):
                     confidence += 10
 
-                # 🔥 TIER LOGIC
-                if impact == "HIGH" or confidence >= 75:
-                    tier = "high"
-                elif confidence >= 60:
-                    tier = "medium"
-                else:
-                    tier = "low"
-
+                # 🔥 CONFIDENCE LABEL (для відображення в пості)
                 if confidence >= 80:
                     confidence_label = "🔥 STRONG"
                 elif confidence >= 65:
@@ -794,47 +788,41 @@ def main():
                 news_text = clean_title + ". " + clean_summary[:150]
                 post_text = news_text
 
-                # ⏱ TIME CONTROL
+                # ⏱ TIME CONTROL — окремий лічильник для Medium
                 current_time = time.time()
-                time_since_last = current_time - last_post_time
+                time_since_medium = current_time - last_medium_time
 
-                # 🎯 РОЗПОДІЛ ПО TIER
-                if tier == "high":
-                    # HIGH — постимо завжди, з UA-перекладом
-                    last_post_time = time.time()
-
-                elif tier == "medium":
-                    # MEDIUM — мовою оригіналу, але з 20-хв тишею
-                    if time_since_last < 1200:
-                        low_priority_news.append(f"🟡 {clean_title}")
-                        posted_news.add(news_id)
-                        print(f"Medium added to digest (silence window).")
-                        continue
-                    else:
-                        last_post_time = time.time()
-                        print(f"Channel is silent for {int(time_since_last)}s. Allowing Medium news.")
-
-                else:  # low
+                # 🎯 РОЗПОДІЛ ПО IMPACT (без врахування confidence)
+                if impact == "LOW":
                     low_priority_news.append(f"🔹 {clean_title}")
                     posted_news.add(news_id)
                     continue
 
-                # 🧠 AI ПЕРЕКЛАД (тільки для HIGH)
+                if impact == "MEDIUM":
+                    # 30-хв тротлінг для MEDIUM (свій лічильник, не блокує HIGH)
+                    if time_since_medium < 1800:
+                        low_priority_news.append(f"🟡 {clean_title}")
+                        posted_news.add(news_id)
+                        print(f"Medium throttled (last Medium {int(time_since_medium)}s ago) → digest")
+                        continue
+                    print(f"Medium allowed (last Medium {int(time_since_medium)}s ago)")
+
+                # Сюди потрапляють тільки HIGH і дозволений MEDIUM
+
+                # 🧠 AI ПЕРЕКЛАД — тільки для HIGH
                 summary_ua = ""
-                if tier == "high":
+                if impact == "HIGH":
                     try:
-                        time.sleep(10)
                         ai_prompt = (
                             f"Analyze this financial news: {post_text}\n"
                             "Provide a very short summary (1 sentence) in Ukrainian explaining the core essence for traders."
                             "Return ONLY the Ukrainian sentence."
                         )
                         summary_ua = call_gemini_ai(ai_prompt)
-
                         if not summary_ua or "Не вдалося" in summary_ua:
                             summary_ua = ""
                     except Exception as e:
-                        print(f"AI Error: {e}")
+                        print(f"AI translation error: {e}")
                         summary_ua = ""
 
                 # Активи та іконки
@@ -850,13 +838,10 @@ def main():
                 signal_icon = SIGNAL_EMOJI.get(signal, "")
                 confidence = min(confidence, 100)
 
-                # UA-секція тільки для HIGH
+                # UA-секція тільки для HIGH (і тільки якщо ШІ зміг)
                 ua_section = f"\n🗣 {summary_ua}\n" if summary_ua else ""
 
-                display_impact = impact
-                if impact == "HIGH": display_impact = "🔴 HIGH"
-                elif impact == "MEDIUM": display_impact = "🟡 MEDIUM"
-                elif impact == "LOW": display_impact = "🟢 LOW"
+                display_impact = "🔴 HIGH" if impact == "HIGH" else "🟡 MEDIUM"
 
                 post = f"""🚨 **Macro Update**
 
@@ -871,19 +856,37 @@ Assets:
 {assets_text}
 """
 
-                if impact != "HIGH" and any(title[:50] in t for t in recent_titles):
+                # Дедуплікація за заголовком тільки для MEDIUM (HIGH завжди йде)
+                if impact == "MEDIUM" and any(title[:50] in t for t in recent_titles):
                     continue
-                try:
-                    send_to_telegram(post)
-                    last_post_time = time.time()
 
+                try:
+                    if impact == "HIGH":
+                        # HIGH → з картинкою
+                        image_prompt = (
+                            "cinematic 3D render of a financial news flash, sleek dark trading terminal, "
+                            "glowing red and gold accent lighting, urgent breaking-news atmosphere, "
+                            "abstract candlestick chart in background, professional cyberpunk aesthetic, "
+                            "8k resolution, photorealistic, sharp focus."
+                        )
+                        image = generate_ai_image(image_prompt)
+                        sent = send_photo_to_telegram(image, post)
+                        if not sent:
+                            # Як фолбек — текст без картинки
+                            send_to_telegram(post)
+                    else:
+                        # MEDIUM → текст
+                        send_to_telegram(post)
+                        last_medium_time = time.time()
+
+                    last_post_time = time.time()
                     posted_news.add(news_id)
                     recent_titles.append(title.lower())
 
                     if len(recent_titles) > 20:
                         recent_titles.pop(0)
 
-                    print("Posted:", title)
+                    print(f"✅ Posted [{impact}]:", title)
 
                 except Exception as e:
                     print("Error:", e)
