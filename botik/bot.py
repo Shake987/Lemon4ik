@@ -403,42 +403,6 @@ def send_to_telegram(message):
     }
     requests.post(url, json=payload)
 
-# =========================
-# 🧠 AI GENERATION
-# =========================
-def generate_post(news_text):
-    prompt = f"""
-Ти фінансовий аналітик.
-
-Стисло проаналізуй новину і дай формат:
-
-🚨 Macro Update
-
-Факт:
-...
-
-Що це означає:
-...
-
-Активи:
-USD (↑/↓/~)
-Gold (↑/↓/~)
-Oil (↑/↓/~)
-Indices (↑/↓/~)
-Crypto (↑/↓/~)
-
-Новина:
-{news_text}
-"""
-
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3
-    )
-
-    return response.choices[0].message.content
-
 last_post_time = 0
 recent_titles = []
 
@@ -668,7 +632,7 @@ def main():
                     "recession", "gdp", "jobs", "nfp", "earning", "revenue", "guidance",
                     "ecb", "boe", "central bank", "pce", "yield", "auction", 
                     "oil", "opec", "war", "ppi", "core ppi", "wholesale inflation",
-                    "btc", "eth", "xau", "usd", "eur", "gbp" "meeting", "statement", "decision", "press conference",
+                    "btc", "eth", "xau", "usd", "eur", "gbp", "meeting", "statement", "decision", "press conference",
                     "market", "analysis", "price", "crypto", "stock", "update", "forecast"
             ]
                 
@@ -697,173 +661,153 @@ def main():
                         # Це звичайний дублікат без нових цифр — скипаємо
                         continue
                 
-                # Додаємо ID в список опублікованих (це важливо для збереження стану)
-                posted_news.add(news_id)     
+                # 🔥 СИГНАЛ
+                signal_score = 0
 
+                # 🔴 risk_off
+                if any(word in title for word in [
+                    "war", "conflict", "attack", "sanctions", "crisis", "recession"
+                ]):
+                    signal_score -= 2
 
-            # 🔥 СИГНАЛ
-            signal_score = 0
+                # 🟢 risk_on
+                if any(word in title for word in [
+                    "growth", "earnings", "revenue", "profit", "stocks higher", "rally"
+                ]):
+                    signal_score += 2
 
-            # 🔴 risk_off
-            if any(word in title for word in [
-                "war", "conflict", "attack", "sanctions", "crisis", "recession"
-            ]):
-               signal_score -= 2
+                # 🏦 hawkish
+                if any(word in title for word in [
+                    "inflation", "cpi", "rate hike"
+                ]):
+                    signal_score += 1
 
-            # 🟢 risk_on
-            if any(word in title for word in [
-                "growth", "earnings", "revenue", "profit", "stocks higher", "rally"
-            ]):
-               signal_score += 2
-            
-            # 🏦 hawkish
-            if any(word in title for word in [
-                "inflation", "cpi", "rate hike"
-            ]):
-               signal_score += 1
+                # 🕊 dovish
+                if any(word in title for word in [
+                    "rate cut", "stimulus"
+                ]):
+                    signal_score -= 1
 
-            # 🕊 dovish
-            if any(word in title for word in [
-                "rate cut", "stimulus"
-            ]):
-               signal_score -= 1
+                # 🪙 CRYPTO SIGNALS
+                if "bitcoin" in title or "btc" in title:
+                    signal_score += 1
 
-            # 🪙 CRYPTO SIGNALS
-            if "bitcoin" in title or "btc" in title:
-                signal_score += 1
+                if "etf" in title and "bitcoin" in title:
+                    signal_score += 2
 
-            if "etf" in title and "bitcoin" in title:
-                signal_score += 2
-
-            if signal_score >= 2:
-                signal = "risk_on"
-            elif signal_score <= -2:
-                signal = "risk_off"
-            elif signal_score == 1:
-                signal = "hawkish"
-            elif signal_score == -1:
-                signal = "dovish"
-            else:
-                signal = "neutral"
-
-
-            # 🔥 CONFIDENCE
-            confidence = 50  # база 
-
-            if signal in ["hawkish", "dovish"]: confidence += 20
-            if impact == "HIGH": confidence += 25
-            elif impact == "MEDIUM": confidence += 15
-
-            confidence += abs(signal_score) * 5
-
-            if signal_score >= 3:
-                confidence += 5
-
-            # ключові слова (сила новини)
-            strong_words = ["inflation", "cpi", "fed", "rate", "war", "crisis"]
-
-            if any(word in title for word in strong_words):
-                confidence += 10
-            
-            # 🔥 TIER LOGIC
-
-            if impact == "HIGH" or confidence >= 75:
-                tier = "high"
-            elif confidence >= 60:
-                tier = "medium"
-            else:
-                tier = "low"
-
-            if confidence >= 80:
-                confidence_label = "🔥 STRONG"
-            elif confidence >= 65:
-                confidence_label = "⚡ MEDIUM"
-            else:
-                confidence_label = "⚪ WEAK"
-
-
-            raw_summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
-            clean_summary = BeautifulSoup(raw_summary, "html.parser").get_text()
-
-            clean_summary = clean_summary.split("http")[0]
-
-            news_text = clean_title + ". " + clean_summary[:150]
-            post_text = news_text
-
-            # ⏱ TIME CONTROL
-            current_time = time.time()
-            time_since_last = current_time - last_post_time
-
-            is_duplicate = news_id in posted_news
-            if is_duplicate:
-                raw_summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
-                if "Actual" in raw_summary and f"{news_id}_actual" not in posted_news:
-                    news_id = f"{news_id}_actual"
+                if signal_score >= 2:
+                    signal = "risk_on"
+                elif signal_score <= -2:
+                    signal = "risk_off"
+                elif signal_score == 1:
+                    signal = "hawkish"
+                elif signal_score == -1:
+                    signal = "dovish"
                 else:
-                    continue
+                    signal = "neutral"
 
-            if tier == "high":
-                last_post_time = time.time()
-                posted_news.add(news_id)
-        
-            elif tier == "medium":
-                if time_since_last < 1200: 
-                    low_priority_news.append(f"🟡 {clean_title}")
-                    posted_news.add(news_id)
-                    print(f"Medium added to digest.")
-                    continue
+                # 🔥 CONFIDENCE
+                confidence = 50  # база
+
+                if signal in ["hawkish", "dovish"]: confidence += 20
+                if impact == "HIGH": confidence += 25
+                elif impact == "MEDIUM": confidence += 15
+
+                confidence += abs(signal_score) * 5
+
+                if signal_score >= 3:
+                    confidence += 5
+
+                strong_words = ["inflation", "cpi", "fed", "rate", "war", "crisis"]
+                if any(word in title for word in strong_words):
+                    confidence += 10
+
+                # 🔥 TIER LOGIC
+                if impact == "HIGH" or confidence >= 75:
+                    tier = "high"
+                elif confidence >= 60:
+                    tier = "medium"
                 else:
+                    tier = "low"
+
+                if confidence >= 80:
+                    confidence_label = "🔥 STRONG"
+                elif confidence >= 65:
+                    confidence_label = "⚡ MEDIUM"
+                else:
+                    confidence_label = "⚪ WEAK"
+
+                clean_summary = BeautifulSoup(raw_summary, "html.parser").get_text()
+                clean_summary = clean_summary.split("http")[0]
+
+                news_text = clean_title + ". " + clean_summary[:150]
+                post_text = news_text
+
+                # ⏱ TIME CONTROL
+                current_time = time.time()
+                time_since_last = current_time - last_post_time
+
+                # 🎯 РОЗПОДІЛ ПО TIER
+                if tier == "high":
+                    # HIGH — постимо завжди, з UA-перекладом
                     last_post_time = time.time()
+
+                elif tier == "medium":
+                    # MEDIUM — мовою оригіналу, але з 20-хв тишею
+                    if time_since_last < 1200:
+                        low_priority_news.append(f"🟡 {clean_title}")
+                        posted_news.add(news_id)
+                        print(f"Medium added to digest (silence window).")
+                        continue
+                    else:
+                        last_post_time = time.time()
+                        print(f"Channel is silent for {int(time_since_last)}s. Allowing Medium news.")
+
+                else:  # low
+                    low_priority_news.append(f"🔹 {clean_title}")
                     posted_news.add(news_id)
-                    print(f"Channel is silent for {int(time_since_last)}s. Allowing Medium news.")
-        
-            else: # low
-                low_priority_news.append(f"🔹 {clean_title}")
-                continue
-            
-            summary_ua = ""
-            if tier == "high":
-                try:
-                    time.sleep(10)
-                    ai_prompt = (
-                        f"Analyze this financial news: {post_text}\n"
-                        "Provide a very short summary (1 sentence) in Ukrainian explaining the core essence for traders."
-                        "Return ONLY the Ukrainian sentence."
-                    )
-                    summary_ua = call_gemini_ai(ai_prompt)
-                    
-                    if not summary_ua or "Не вдалося" in summary_ua:
+                    continue
+
+                # 🧠 AI ПЕРЕКЛАД (тільки для HIGH)
+                summary_ua = ""
+                if tier == "high":
+                    try:
+                        time.sleep(10)
+                        ai_prompt = (
+                            f"Analyze this financial news: {post_text}\n"
+                            "Provide a very short summary (1 sentence) in Ukrainian explaining the core essence for traders."
+                            "Return ONLY the Ukrainian sentence."
+                        )
+                        summary_ua = call_gemini_ai(ai_prompt)
+
+                        if not summary_ua or "Не вдалося" in summary_ua:
+                            summary_ua = ""
+                    except Exception as e:
+                        print(f"AI Error: {e}")
                         summary_ua = ""
-                except Exception as e:
-                    print(f"AI Error: {e}")
-                    summary_ua = ""
-            else:
-                # Для Medium та Low не викликаємо ШІ, щоб зберегти квоту
-                summary_ua = "" 
 
-            # Формуємо активи та іконки (це залишаємо)
-            assets = SIGNAL_IMPACT.get(signal, {})
-            assets_text = " | ".join([
-                f"{ASSET_EMOJI.get(k, '')} {k} {ARROW_EMOJI.get(v, v)}"
-                for k, v in assets.items()
-            ])
-            
-            if not assets_text:
-                assets_text = "No clear signal"
+                # Активи та іконки
+                assets = SIGNAL_IMPACT.get(signal, {})
+                assets_text = " | ".join([
+                    f"{ASSET_EMOJI.get(k, '')} {k} {ARROW_EMOJI.get(v, v)}"
+                    for k, v in assets.items()
+                ])
 
-            signal_icon = SIGNAL_EMOJI.get(signal, "")
-            confidence = min(confidence, 100)
+                if not assets_text:
+                    assets_text = "No clear signal"
 
-            # 2. ОНОВЛЕННЯ ШАБЛОНУ (Пункт 2)
-            # Додаємо секцію "Суть" тільки якщо вона не порожня (тобто тільки для HIGH)
-            ua_section = f"\n🗣 {summary_ua}\n" if summary_ua else ""
+                signal_icon = SIGNAL_EMOJI.get(signal, "")
+                confidence = min(confidence, 100)
 
-            display_impact = impact
-            if impact == "HIGH": display_impact = "🔴 HIGH"
-            elif impact == "MEDIUM": display_impact = "🟡 MEDIUM"
-            elif impact == "LOW": display_impact = "🟢 LOW"
+                # UA-секція тільки для HIGH
+                ua_section = f"\n🗣 {summary_ua}\n" if summary_ua else ""
 
-            post = f"""🚨 **Macro Update**
+                display_impact = impact
+                if impact == "HIGH": display_impact = "🔴 HIGH"
+                elif impact == "MEDIUM": display_impact = "🟡 MEDIUM"
+                elif impact == "LOW": display_impact = "🟢 LOW"
+
+                post = f"""🚨 **Macro Update**
 
 Signal: {signal_icon} {signal.upper()} ({confidence}% {confidence_label})
 Impact: {display_impact}
@@ -876,45 +820,47 @@ Assets:
 {assets_text}
 """
 
-            if impact != "HIGH" and any(title[:50] in t for t in recent_titles):
-                continue
-            try:   
-                send_to_telegram(post)
-                last_post_time = time.time()
+                if impact != "HIGH" and any(title[:50] in t for t in recent_titles):
+                    continue
+                try:
+                    send_to_telegram(post)
+                    last_post_time = time.time()
 
-                posted_news.add(news_id)
-                recent_titles.append(title.lower())
+                    posted_news.add(news_id)
+                    recent_titles.append(title.lower())
 
-                if len(recent_titles) > 20:
-                    recent_titles.pop(0)
+                    if len(recent_titles) > 20:
+                        recent_titles.pop(0)
 
-                print("Posted:", title)
+                    print("Posted:", title)
 
-            except Exception as e:
-                print("Error:", e)
+                except Exception as e:
+                    print("Error:", e)
 
-            now_ts = time.time()
-            # === НОВА ЛОГІКА ДАЙДЖЕСТУ ===
-            current_time = datetime.datetime.now()
-            current_hour = current_time.hour
+        # === ДАЙДЖЕСТ (поза циклом RSS, раз на ітерацію main) ===
+        current_time_dt = datetime.datetime.now()
+        current_hour = current_time_dt.hour
 
-            # 1. Перевіряємо годину та чи не було поста в цю годину раніше
-            if current_hour in DIGEST_HOURS and current_hour != last_sent_hour:
-                # 2. Перевіряємо мінімальну кількість новин
-                if len(low_priority_news) >= 10:
-                    print(f"⏰ Час дайджесту ({current_hour}:00)! Новин: {len(low_priority_news)}")
-        
-                    send_low_priority_digest()
-        
-                    # 3. Очищуємо список та запам'ятовуємо годину
-                    low_priority_news.clear()
-                    last_sent_hour = current_hour
-                    print("DEBUG: Список новин очищено.")
-                else:
-                    print(f"⏳ Час {current_hour}:00 підійшов, але новин мало ({len(low_priority_news)}/10). Чекаємо.")
+        if current_hour in DIGEST_HOURS and current_hour != last_sent_hour:
+            if len(low_priority_news) >= 10:
+                print(f"⏰ Час дайджесту ({current_hour}:00)! Новин: {len(low_priority_news)}")
+
+                send_low_priority_digest()
+
+                low_priority_news.clear()
+                last_sent_hour = current_hour
+                print("DEBUG: Список новин очищено.")
+            else:
+                print(f"⏳ Час {current_hour}:00 підійшов, але новин мало ({len(low_priority_news)}/10). Чекаємо.")
+
+        # ⏸ Не спінити CPU — чекаємо хвилину перед наступним циклом
+        print("⏸ Sleeping 60s before next cycle...")
+        time.sleep(60)
 
 if __name__ == "__main__":
     while True:
-        main()
-        print("Waiting 60 seconds before next check...")
-        time.sleep(60)
+        try:
+            main()
+        except Exception as e:
+            print(f"❌ Main crashed: {e}. Restarting in 60s")
+            time.sleep(60)
