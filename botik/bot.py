@@ -794,21 +794,23 @@ def main():
             current_time = time.time()
             time_since_last = current_time - last_post_time
 
-            if tier == "high":
-                if news_id in posted_news:
-                    raw_summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
-                    if "Actual" in raw_summary and f"{news_id}_actual" not in posted_news:
-                        news_id = f"{news_id}_actual"
-                    else:
-                        continue
+            is_duplicate = news_id in posted_news
+            if is_duplicate:
+                raw_summary = getattr(entry, "summary", "") or getattr(entry, "description", "")
+                if "Actual" in raw_summary and f"{news_id}_actual" not in posted_news:
+                    news_id = f"{news_id}_actual"
+                else:
+                    continue
 
+            if tier == "high":
                 last_post_time = time.time()
                 posted_news.add(news_id)
         
             elif tier == "medium":
                 if time_since_last < 1200: 
                     low_priority_news.append(f"🟡 {clean_title}")
-                    print(f"Medium added to digest (last post was {int(time_since_last)}s ago)")
+                    posted_news.add(news_id)
+                    print(f"Medium added to digest.")
                     continue
                 else:
                     last_post_time = time.time()
