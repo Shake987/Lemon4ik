@@ -20,6 +20,7 @@ warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 GOOGLE_API_KEY = os.environ["GOOGLE_API_KEY"]
+FINNHUB_API_KEY = os.environ["FINNHUB_API_KEY"]
 
 low_priority_news = []
 last_digest_time = time.time()
@@ -166,75 +167,92 @@ def get_direction(actual, forecast):
         return "NEUTRAL"
 
 
+FINNHUB_COUNTRY_TO_CURRENCY = {
+    "US": "USD",
+    "EU": "EUR",
+    "GB": "GBP",
+}
+
+FINNHUB_IMPACT_MAP = {"high": "High", "medium": "Medium", "low": "Low"}
+
+
+def _fmt_finnhub_value(v, unit):
+    """Перетворює числове значення Finnhub у строку з одиницею (як було в FF XML)."""
+    if v is None:
+        return ""
+    if isinstance(v, float):
+        s = f"{v:g}"  # 3.20 -> 3.2; 3.0 -> 3
+    else:
+        s = str(v)
+    if unit:
+        s = s + unit
+    return s
+
+
 def get_forexfactory_events():
-    url = f"https://nfs.faireconomy.media/ff_calendar_thisweek.xml?v={int(time.time())}"
+    """Тягне економічний календар з Finnhub (free tier). Назва функції залишилась
+    для сумісності з рештою коду — реальне джерело тепер Finnhub, не ForexFactory."""
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/xml, text/xml, */*",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    from_date = (now_utc - datetime.timedelta(days=1)).date()  # вчора (на випадок ще "свіжих" Actual)
+    to_date = (now_utc + datetime.timedelta(days=2)).date()  # +2 дні наперед
 
-    for i in range(3):
-        response = requests.get(url, headers=headers)
+    url = (
+        "https://finnhub.io/api/v1/calendar/economic"
+        f"?from={from_date.isoformat()}&to={to_date.isoformat()}"
+        f"&token={FINNHUB_API_KEY}"
+    )
 
-        text = response.text.lower()
-
-        if "rate limited" not in text and "just a moment" not in text:
-            break
-
-        print(f"🔁 Retry {i+1}")
-        time.sleep(2)
-
-    if "rate limited" in text or "just a moment" in text:
-        print("❌ BLOCKED AFTER RETRIES")
+    try:
+        response = requests.get(url, timeout=30)
+    except Exception as e:
+        print(f"❌ Finnhub fetch exception: {e}")
         return []
 
-    # 🔍 DEBUG
-    print(response.text[:500])
+    if not response.ok:
+        print(f"❌ Finnhub HTTP {response.status_code}: {response.text[:200]}")
+        return []
 
-    soup = BeautifulSoup(response.content, "xml")
+    try:
+        data = response.json()
+    except Exception as e:
+        print(f"❌ Finnhub JSON parse error: {e}")
+        return []
 
+    raw_events = data.get("economicCalendar", [])
     events = []
 
-    for item in soup.find_all("event"):
+    for item in raw_events:
+        country = item.get("country", "")
+        currency = FINNHUB_COUNTRY_TO_CURRENCY.get(country)
+        if not currency:
+            continue  # скіпаємо країни які нас не цікавлять
+
+        impact_raw = (item.get("impact") or "").lower()
+        impact = FINNHUB_IMPACT_MAP.get(impact_raw, "Low")
+
+        time_str = item.get("time")
+        if not time_str:
+            continue
         try:
-            title = item.find("title").text
-            currency = item.find("country").text
-            impact = item.find("impact").text
-
-            actual_node = item.find("actual")
-            forecast_node = item.find("forecast")
-            previous_node = item.find("previous")
-
-            actual = actual_node.text if actual_node else ""
-            forecast = forecast_node.text if forecast_node else ""
-            previous = previous_node.text if previous_node else ""
-
-            date = item.find("date").text
-            time_ = item.find("time").text
-
-            # 🧠 PARSE DATETIME
-            import datetime
-
-            dt_str = f"{date} {time_}"
-            event_time = datetime.datetime.strptime(dt_str, "%m-%d-%Y %I:%M%p")
+            event_time = datetime.datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
             event_time = event_time.replace(tzinfo=datetime.timezone.utc)
-
-            events.append({
-                "title": title,
-                "currency": currency,
-                "impact": impact,
-                "time": event_time,
-                "actual": actual,
-                "forecast": forecast,
-                "previous": previous
-            })
-
         except Exception as e:
-            print("⚠️ SKIPPED EVENT:", e)
+            print(f"⚠️ Bad time format: {time_str} ({e})")
             continue
 
+        unit = item.get("unit", "") or ""
+        events.append({
+            "title": item.get("event", "") or "",
+            "currency": currency,
+            "impact": impact,
+            "time": event_time,
+            "actual": _fmt_finnhub_value(item.get("actual"), unit),
+            "forecast": _fmt_finnhub_value(item.get("estimate"), unit),
+            "previous": _fmt_finnhub_value(item.get("prev"), unit),
+        })
+
+    print(f"📅 Finnhub: {len(raw_events)} подій всього, {len(events)} після фільтра (US/EU/GB)")
     return events
 
 def send_low_priority_digest():
@@ -531,7 +549,7 @@ def main():
 
         if now_ts - last_update > 900 or due_pre_ids:
             if due_pre_ids:
-                print(f"🔄 Точковий фетч ForexFactory (за Actual для {len(due_pre_ids)} подій)")
+                print(f"🔄 Точковий фетч календаря (за Actual для {len(due_pre_ids)} подій)")
             events = get_forexfactory_events()
             last_update = now_ts
 
