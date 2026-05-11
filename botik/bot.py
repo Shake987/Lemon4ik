@@ -171,7 +171,13 @@ FINNHUB_COUNTRY_TO_CURRENCY = {
     "US": "USD",
     "EU": "EUR",
     "GB": "GBP",
+    "JP": "JPY",
+    "CA": "CAD",
+    "AU": "AUD",
 }
+
+# Для цих країн постимо тільки HIGH impact (а не Medium/Low)
+FINNHUB_HIGH_ONLY_COUNTRIES = {"JP", "CA", "AU"}
 
 FINNHUB_IMPACT_MAP = {"high": "High", "medium": "Medium", "low": "Low"}
 
@@ -229,6 +235,11 @@ def get_forexfactory_events():
             continue  # скіпаємо країни які нас не цікавлять
 
         impact_raw = (item.get("impact") or "").lower()
+
+        # Для JP/CA/AU пропускаємо все крім HIGH
+        if country in FINNHUB_HIGH_ONLY_COUNTRIES and impact_raw != "high":
+            continue
+
         impact = FINNHUB_IMPACT_MAP.get(impact_raw, "Low")
 
         time_str = item.get("time")
@@ -252,7 +263,7 @@ def get_forexfactory_events():
             "previous": _fmt_finnhub_value(item.get("prev"), unit),
         })
 
-    print(f"📅 Finnhub: {len(raw_events)} подій всього, {len(events)} після фільтра (US/EU/GB)")
+    print(f"📅 Finnhub: {len(raw_events)} подій всього, {len(events)} після фільтра (US/EU/GB всі; JP/CA/AU тільки HIGH)")
     return events
 
 def send_low_priority_digest():
