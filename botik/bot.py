@@ -57,7 +57,7 @@ last_cot_release_date = None  # дата останнього вівторков
 FALLBACK_IMAGE_URL = "https://images.unsplash.com/photo-1611974717482-98aa003745fc"
 
 
-def send_photo_to_telegram(photo, caption):
+def send_photo_to_telegram(photo, caption, parse_mode="Markdown"):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     try:
         if isinstance(photo, (bytes, bytearray)):
@@ -65,16 +65,18 @@ def send_photo_to_telegram(photo, caption):
             data = {
                 "chat_id": TELEGRAM_CHAT_ID,
                 "caption": caption,
-                "parse_mode": "Markdown",
             }
+            if parse_mode:
+                data["parse_mode"] = parse_mode
             response = requests.post(url, data=data, files=files, timeout=30)
         else:
             payload = {
                 "chat_id": TELEGRAM_CHAT_ID,
                 "photo": photo,
                 "caption": caption,
-                "parse_mode": "Markdown",
             }
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
             response = requests.post(url, json=payload, timeout=30)
     except Exception as e:
         print(f"⚠️ Telegram sendPhoto exception: {e}")
@@ -592,21 +594,41 @@ def _find_col(df, hints):
 
 
 def _extract_market(df, pattern):
-    """Фільтрує DataFrame по шаблону назви ринку, повертає відсортовані за датою рядки."""
+    """Фільтрує DataFrame по шаблону назви ринку, повертає відсортовані за датою рядки.
+    Виключає MICRO/E-MICRO варіанти (це окремі контракти з іншими номіналами)."""
     name_col = _find_col(df, ["market", "exchange", "names"])
-    date_col = _find_col(df, ["as_of_date"]) or _find_col(df, ["report_date"])
+    # Спершу шукаємо колонку з YYYY-MM-DD форматом, потім fallback на YYMMDD
+    date_col = (
+        _find_col(df, ["report_date", "yyyy"]) or
+        _find_col(df, ["as_of_date", "yyyy"]) or
+        _find_col(df, ["report_date"]) or
+        _find_col(df, ["as_of_date"])
+    )
     if not name_col or not date_col:
         print(f"⚠️ COT: не знайдено колонок (name={name_col}, date={date_col})")
         return None
 
-    mask = df[name_col].astype(str).str.contains(pattern, case=False, na=False)
+    names = df[name_col].astype(str)
+    mask = names.str.contains(pattern, case=False, na=False)
+    # Виключаємо MICRO/E-MICRO варіанти — це окремі контракти
+    mask &= ~names.str.contains(r"\bMICRO\b|\bE-MICRO\b", case=False, na=False, regex=True)
     sub = df[mask].copy()
     if sub.empty:
         return None
 
-    # Парсимо дату
-    sub["_date"] = pd.to_datetime(sub[date_col], errors="coerce", format="mixed")
+    # Парсимо дату захищено: спочатку як рядок (ISO), якщо більше половини NaN — пробуємо YYMMDD
+    date_str = sub[date_col].astype(str)
+    parsed = pd.to_datetime(date_str, errors="coerce")
+    if parsed.isna().mean() > 0.5:
+        parsed = pd.to_datetime(date_str, format="%y%m%d", errors="coerce")
+    sub["_date"] = parsed
     sub = sub.dropna(subset=["_date"]).sort_values("_date").reset_index(drop=True)
+
+    if not sub.empty:
+        unique_markets = sub[name_col].unique()
+        if len(unique_markets) > 1:
+            print(f"⚠️ COT '{pattern}': матчиться {len(unique_markets)} ринків: {list(unique_markets)[:3]}")
+
     return sub
 
 
@@ -684,6 +706,23 @@ def _generate_cot_chart(dates, net_series, market_name):
     return buf.getvalue()
 
 
+def _sanitize_ai_text(text, max_chars=350):
+    """Прибирає Markdown-шум (**, *, заголовки, bullet'и) і обрізає до max_chars.
+    Telegram parse_mode=None спрощує життя — але робимо текст компактним."""
+    if not text:
+        return ""
+    cleaned = text.replace("**", "").replace("__", "")
+    lines = []
+    for line in cleaned.split("\n"):
+        stripped = line.lstrip("*#-•— ").strip()
+        if stripped:
+            lines.append(stripped)
+    cleaned = " ".join(lines).strip()
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars].rstrip() + "..."
+    return cleaned
+
+
 def _build_cot_post(market_name, ticker, series, sentiment_pct, ai_comment, report_date):
     longs = int(series["long"].iloc[-1]) if pd.notna(series["long"].iloc[-1]) else 0
     shorts = int(series["short"].iloc[-1]) if pd.notna(series["short"].iloc[-1]) else 0
@@ -706,8 +745,9 @@ def _build_cot_post(market_name, ticker, series, sentiment_pct, ai_comment, repo
 
     ai_line = f"\n🗣 {ai_comment}\n" if ai_comment else ""
 
+    # Без Markdown — використовуємо plain text для caption (parse_mode=None у виклику)
     return (
-        f"📊 **COT Report: {market_name} ({ticker})**\n"
+        f"📊 COT Report: {market_name} ({ticker})\n"
         f"Тиждень: {report_date.strftime('%Y-%m-%d')}\n\n"
         f"🟢 Longs:  {longs:,} {lc_str}\n"
         f"🔴 Shorts: {shorts:,} {sc_str}\n"
@@ -732,19 +772,20 @@ def _cot_ai_commentary(market_name, ticker, series, sentiment_pct):
         net_change = 0
 
     prompt = (
-        f"Проаналізуй позицію некомерційних трейдерів (великі спекулянти/хедж-фонди) за COT звітом для {market_name} ({ticker}).\n\n"
-        f"Дані останнього тижня:\n"
+        f"COT звіт для {market_name} ({ticker}):\n"
         f"- Longs: {longs:,}\n"
         f"- Shorts: {shorts:,}\n"
         f"- Net Position: {net:+,} (зміна {net_change:+,} за тиждень)\n"
-        f"- Sentiment percentile: {sentiment_pct:.0f}% за 52 тижні (100% = історичний максимум long-позицій)\n\n"
-        "Дай короткий аналіз українською (2-3 речення): що це означає для трейдера, "
-        "чи близько до екстремуму, чи варто чекати розворот. Без формальностей, просто суть."
+        f"- Sentiment percentile: {sentiment_pct:.0f}% (100 = історичний максимум long-позицій за 52 тижні)\n\n"
+        "Напиши РОВНО 2 короткі речення українською — суть для трейдера. "
+        "БЕЗ заголовків, БЕЗ markdown зірочок, БЕЗ списків/bullet-points, "
+        "БЕЗ слів 'Аналіз', 'Висновок', 'Що це означає'. "
+        "Тільки 2 речення прямим текстом: куди дивляться спекулянти і чи близько до екстремуму."
     )
     result = call_gemini_ai(prompt)
     if not result or "Не вдалося" in result:
         return ""
-    return result.strip()
+    return _sanitize_ai_text(result)
 
 
 def post_cot_reports():
@@ -803,9 +844,10 @@ def post_cot_reports():
             report_date = series["dates"].iloc[-1]
             post = _build_cot_post(display_name, ticker, series, sentiment_pct, ai_comment, report_date)
 
-            sent = send_photo_to_telegram(chart, post)
+            # parse_mode=None — плоский текст, бо AI може поламати Markdown
+            sent = send_photo_to_telegram(chart, post, parse_mode=None)
             if sent:
-                print(f"✅ COT posted: {display_name}")
+                print(f"✅ COT posted: {display_name} (Net={int(net_series.iloc[-1]):,}, date={report_date.strftime('%Y-%m-%d')})")
             else:
                 # Фолбек — текст без графіка
                 send_to_telegram(post)
