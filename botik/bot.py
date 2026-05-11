@@ -9,8 +9,16 @@ import os
 import random
 import urllib.parse
 import warnings
+import io
 from bs4 import XMLParsedAsHTMLWarning
 from google import genai
+
+# matplotlib headless mode — обов'язково до import pyplot
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import pandas as pd
+import cot_reports as cot
 
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
@@ -33,6 +41,17 @@ pending_actual_fetches = {}
 
 DIGEST_HOURS = [9, 13, 14, 17, 21]  # Години для відправки
 last_sent_hour = -1
+
+# === COT (Commitments of Traders) ===
+# display_name → (ticker для поста, pattern для матчингу у Market_and_Exchange_Names)
+COT_MARKETS = {
+    "GOLD":      ("XAUUSD", "GOLD - COMMODITY EXCHANGE"),
+    "BITCOIN":   ("BTCUSD", "BITCOIN - CHICAGO MERCANTILE"),
+    "EURO FX":   ("EURUSD", "EURO FX - CHICAGO MERCANTILE"),
+    "S&P 500":   ("SPX",    "E-MINI S&P 500 - CHICAGO MERCANTILE"),
+    "CRUDE OIL": ("WTI",    "CRUDE OIL, LIGHT SWEET"),
+}
+last_cot_release_date = None  # дата останнього вівторкового звіту, який ми вже опублікували
 
 
 FALLBACK_IMAGE_URL = "https://images.unsplash.com/photo-1611974717482-98aa003745fc"
@@ -542,8 +561,270 @@ MEDIUM_IMPACT = [
     "economy", "retail", "manufacturing", "jobs"
 ]
 
+
+# =========================
+# 📊 COT REPORT
+# =========================
+
+def _fetch_cot_legacy_df():
+    """Тягне Legacy COT за поточний + минулий рік (для 52-тижневого вікна)."""
+    now_year = datetime.datetime.now(datetime.timezone.utc).year
+    frames = []
+    for year in (now_year - 1, now_year):
+        try:
+            df = cot.cot_year(year=year, cot_report_type="legacy_fut")
+            if df is not None and len(df) > 0:
+                frames.append(df)
+        except Exception as e:
+            print(f"⚠️ COT fetch year={year} failed: {e}")
+    if not frames:
+        return None
+    return pd.concat(frames, ignore_index=True)
+
+
+def _find_col(df, hints):
+    """Знайти колонку, ім'я якої містить всі підрядки з hints (case-insensitive)."""
+    for col in df.columns:
+        norm = col.lower().replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
+        if all(h in norm for h in hints):
+            return col
+    return None
+
+
+def _extract_market(df, pattern):
+    """Фільтрує DataFrame по шаблону назви ринку, повертає відсортовані за датою рядки."""
+    name_col = _find_col(df, ["market", "exchange", "names"])
+    date_col = _find_col(df, ["as_of_date"]) or _find_col(df, ["report_date"])
+    if not name_col or not date_col:
+        print(f"⚠️ COT: не знайдено колонок (name={name_col}, date={date_col})")
+        return None
+
+    mask = df[name_col].astype(str).str.contains(pattern, case=False, na=False)
+    sub = df[mask].copy()
+    if sub.empty:
+        return None
+
+    # Парсимо дату
+    sub["_date"] = pd.to_datetime(sub[date_col], errors="coerce", format="mixed")
+    sub = sub.dropna(subset=["_date"]).sort_values("_date").reset_index(drop=True)
+    return sub
+
+
+def _series_long_short(market_df):
+    """Витягає колонки Noncommercial Long/Short з market_df як числові Series."""
+    long_col = _find_col(market_df, ["noncommercial", "long", "all"])
+    short_col = _find_col(market_df, ["noncommercial", "short", "all"])
+    long_chg = _find_col(market_df, ["change", "noncommercial", "long"])
+    short_chg = _find_col(market_df, ["change", "noncommercial", "short"])
+    if not long_col or not short_col:
+        return None
+
+    longs = pd.to_numeric(market_df[long_col], errors="coerce")
+    shorts = pd.to_numeric(market_df[short_col], errors="coerce")
+    lc = pd.to_numeric(market_df[long_chg], errors="coerce") if long_chg else None
+    sc = pd.to_numeric(market_df[short_chg], errors="coerce") if short_chg else None
+    return {"long": longs, "short": shorts, "long_change": lc, "short_change": sc, "dates": market_df["_date"]}
+
+
+def _sentiment_percentile(net_series, weeks=52):
+    """Перцентиль поточного Net у вікні останніх N тижнів."""
+    window = net_series.tail(weeks).dropna()
+    if len(window) < 4:
+        return None
+    current = window.iloc[-1]
+    rank = (window <= current).sum() / len(window)
+    return float(rank) * 100.0
+
+
+def _sentiment_label(pct):
+    if pct is None:
+        return "N/A"
+    if pct >= 80:
+        return f"🔥 Extreme Bullish (топ-{100-int(pct)}% за 52 тижні)"
+    if pct >= 60:
+        return "🟢 Bullish"
+    if pct >= 40:
+        return "⚪ Neutral"
+    if pct >= 20:
+        return "🔴 Bearish"
+    return f"🧊 Extreme Bearish (низ-{int(pct)}% за 52 тижні)"
+
+
+def _generate_cot_chart(dates, net_series, market_name):
+    """Лінійний графік Net Position за останні 26 тижнів — повертає bytes (PNG)."""
+    last_n = 26
+    d = dates.tail(last_n).reset_index(drop=True)
+    n = net_series.tail(last_n).reset_index(drop=True)
+
+    fig, ax = plt.subplots(figsize=(10, 5), facecolor="#1a1a1a")
+    ax.set_facecolor("#1a1a1a")
+
+    # Колір лінії: зелений якщо net > 0, червоний якщо < 0 (за останнім значенням)
+    line_color = "#00d4aa" if n.iloc[-1] >= 0 else "#ff5566"
+
+    ax.plot(d, n, color=line_color, linewidth=2.2, marker="o", markersize=4)
+    ax.fill_between(d, n, alpha=0.15, color=line_color)
+    ax.axhline(0, color="#888", linewidth=0.8, linestyle="--")
+
+    ax.set_title(f"{market_name} — Non-Commercial Net Position (26 тижнів)",
+                 color="white", fontsize=14, pad=15)
+    ax.tick_params(colors="#cccccc")
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    for spine in ("bottom", "left"):
+        ax.spines[spine].set_color("#666666")
+    ax.grid(True, alpha=0.15, color="#666666")
+    fig.autofmt_xdate()
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", dpi=100, facecolor="#1a1a1a")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _build_cot_post(market_name, ticker, series, sentiment_pct, ai_comment, report_date):
+    longs = int(series["long"].iloc[-1]) if pd.notna(series["long"].iloc[-1]) else 0
+    shorts = int(series["short"].iloc[-1]) if pd.notna(series["short"].iloc[-1]) else 0
+    net = longs - shorts
+
+    if series["long_change"] is not None and pd.notna(series["long_change"].iloc[-1]):
+        lc = int(series["long_change"].iloc[-1])
+        lc_str = f"({lc:+,})"
+    else:
+        lc_str = ""
+    if series["short_change"] is not None and pd.notna(series["short_change"].iloc[-1]):
+        sc = int(series["short_change"].iloc[-1])
+        sc_str = f"({sc:+,})"
+    else:
+        sc_str = ""
+
+    sent_line = ""
+    if sentiment_pct is not None:
+        sent_line = f"🌡 Sentiment: {sentiment_pct:.0f}% — {_sentiment_label(sentiment_pct)}\n"
+
+    ai_line = f"\n🗣 {ai_comment}\n" if ai_comment else ""
+
+    return (
+        f"📊 **COT Report: {market_name} ({ticker})**\n"
+        f"Тиждень: {report_date.strftime('%Y-%m-%d')}\n\n"
+        f"🟢 Longs:  {longs:,} {lc_str}\n"
+        f"🔴 Shorts: {shorts:,} {sc_str}\n"
+        f"⚖️ Net:    {net:+,}\n"
+        f"{sent_line}"
+        f"{ai_line}"
+        f"\n#COT #{ticker}"
+    )
+
+
+def _cot_ai_commentary(market_name, ticker, series, sentiment_pct):
+    """AI коментар від Gemini. Повертає '' якщо ШІ заблокований/упав."""
+    longs = int(series["long"].iloc[-1])
+    shorts = int(series["short"].iloc[-1])
+    net = longs - shorts
+
+    # Зміна тижневого нет
+    if len(series["long"]) >= 2:
+        prev_net = int(series["long"].iloc[-2] - series["short"].iloc[-2])
+        net_change = net - prev_net
+    else:
+        net_change = 0
+
+    prompt = (
+        f"Проаналізуй позицію некомерційних трейдерів (великі спекулянти/хедж-фонди) за COT звітом для {market_name} ({ticker}).\n\n"
+        f"Дані останнього тижня:\n"
+        f"- Longs: {longs:,}\n"
+        f"- Shorts: {shorts:,}\n"
+        f"- Net Position: {net:+,} (зміна {net_change:+,} за тиждень)\n"
+        f"- Sentiment percentile: {sentiment_pct:.0f}% за 52 тижні (100% = історичний максимум long-позицій)\n\n"
+        "Дай короткий аналіз українською (2-3 речення): що це означає для трейдера, "
+        "чи близько до екстремуму, чи варто чекати розворот. Без формальностей, просто суть."
+    )
+    result = call_gemini_ai(prompt)
+    if not result or "Не вдалося" in result:
+        return ""
+    return result.strip()
+
+
+def post_cot_reports():
+    """Раз на тиждень (п'ятниця після 21:00 UTC) тягне Legacy COT і постить N ринків.
+
+    Для одноразового тесту — встав env COT_TEST_NOW=1 у Railway, перезапусти,
+    дочекайся посту і прибери змінну (інакше при кожному рестарті бот постить COT)."""
+    global last_cot_release_date
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    force = os.environ.get("COT_TEST_NOW", "").lower() in ("1", "true", "yes")
+
+    # П'ятниця = 4 (Monday=0). CFTC викладає звіт о ~20:30 UTC. Запас — постимо після 21:00 UTC.
+    if not force and (now.weekday() != 4 or now.hour < 21):
+        return False
+    if force:
+        print("⚙️ COT_TEST_NOW=1 — пропускаємо guard, постимо одразу")
+
+    print("📊 Тягнемо COT Report з CFTC...")
+    df = _fetch_cot_legacy_df()
+    if df is None or df.empty:
+        print("❌ COT: порожні дані, спробуємо наступного циклу")
+        return False
+
+    # Беремо найсвіжішу дату звіту — щоб не дублювати, якщо вже постили
+    name_col = _find_col(df, ["market", "exchange", "names"])
+    date_col = _find_col(df, ["as_of_date"]) or _find_col(df, ["report_date"])
+    if not date_col:
+        print("❌ COT: не знайдено колонку дати")
+        return False
+    latest = pd.to_datetime(df[date_col], errors="coerce", format="mixed").max().date()
+
+    if last_cot_release_date == latest:
+        print(f"COT: звіт за {latest} вже опублікований, скіп")
+        return False
+
+    print(f"📊 Найсвіжіший звіт за {latest}, постимо {len(COT_MARKETS)} ринків")
+
+    for i, (display_name, (ticker, pattern)) in enumerate(COT_MARKETS.items()):
+        try:
+            market_df = _extract_market(df, pattern)
+            if market_df is None or market_df.empty:
+                print(f"⚠️ COT {display_name}: не знайдено даних для шаблону '{pattern}'")
+                continue
+
+            series = _series_long_short(market_df)
+            if series is None:
+                print(f"⚠️ COT {display_name}: бракує колонок long/short")
+                continue
+
+            net_series = series["long"] - series["short"]
+            sentiment_pct = _sentiment_percentile(net_series)
+            ai_comment = _cot_ai_commentary(display_name, ticker, series, sentiment_pct or 50)
+
+            chart = _generate_cot_chart(series["dates"], net_series, display_name)
+            report_date = series["dates"].iloc[-1]
+            post = _build_cot_post(display_name, ticker, series, sentiment_pct, ai_comment, report_date)
+
+            sent = send_photo_to_telegram(chart, post)
+            if sent:
+                print(f"✅ COT posted: {display_name}")
+            else:
+                # Фолбек — текст без графіка
+                send_to_telegram(post)
+                print(f"⚠️ COT {display_name}: фото не доставлено, відправили текст")
+
+            # 1 хв пауза між постами (крім останнього)
+            if i < len(COT_MARKETS) - 1:
+                time.sleep(60)
+
+        except Exception as e:
+            print(f"❌ COT {display_name} error: {e}")
+            continue
+
+    last_cot_release_date = latest
+    return True
+
+
 def main():
-    global last_post_time, last_medium_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_hour, pending_actual_fetches
+    global last_post_time, last_medium_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_hour, pending_actual_fetches, last_cot_release_date
 
     last_update = 0
     events = []
@@ -938,6 +1219,12 @@ Assets:
                     print(f"⚠️ Дайджест НЕ відправлено (ШІ/Telegram не відповів). Новини збережено до наступного слоту.")
             else:
                 print(f"⏳ Час {current_hour}:00 підійшов, але новин мало ({len(low_priority_news)}/10). Чекаємо.")
+
+        # === COT REPORT (раз на тиждень, п'ятниця ≥21:00 UTC) ===
+        try:
+            post_cot_reports()
+        except Exception as e:
+            print(f"❌ COT report top-level error: {e}")
 
         # ⏸ Не спінити CPU — чекаємо хвилину перед наступним циклом
         print("⏸ Sleeping 60s before next cycle...")
