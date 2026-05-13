@@ -80,6 +80,17 @@ EARNINGS_TICKERS = {
 posted_earnings = set()  # ключ "SYMBOL_YEAR_Q{Q}"
 _earnings_test_done = False  # guard: EARNINGS_TEST_NOW відправляє лише раз на запуск
 
+# === OPTIONS DESK (BTC/ETH опціонна аналітика через Deribit) ===
+OPTIONS_CURRENCIES = ["BTC", "ETH"]
+posted_options_dates = set()  # ключі ISO-дат коли вже постили
+_options_test_done = False    # guard: OPTIONS_TEST_NOW один пост за запуск
+
+MONTHS_UA = {
+    1: "січня", 2: "лютого", 3: "березня", 4: "квітня",
+    5: "травня", 6: "червня", 7: "липня", 8: "серпня",
+    9: "вересня", 10: "жовтня", 11: "листопада", 12: "грудня",
+}
+
 
 FALLBACK_IMAGE_URL = "https://images.unsplash.com/photo-1611974717482-98aa003745fc"
 
@@ -455,6 +466,298 @@ def post_earnings_reports():
         send_to_telegram(post)
         posted_earnings.add(key)
         print(f"✅ Earnings posted: {symbol} Q{quarter} {year}")
+
+
+# =========================
+# 📊 OPTIONS DESK (Deribit BTC/ETH)
+# =========================
+def _fmt_date_ua(d):
+    return f"{d.day} {MONTHS_UA[d.month]}"
+
+
+def _fmt_oi(oi):
+    """12400 → '12.4K', 1234567 → '1.23M'."""
+    if oi is None:
+        return "—"
+    try:
+        oi = float(oi)
+    except (TypeError, ValueError):
+        return "—"
+    if oi >= 1e6:
+        return f"{oi/1e6:.2f}M"
+    if oi >= 1e3:
+        return f"{oi/1e3:.1f}K"
+    return f"{oi:.0f}"
+
+
+def _parse_deribit_instrument(name):
+    """'BTC-29MAY26-65000-C' → (date, strike, 'C'|'P'). None при невдалому парсингу."""
+    parts = name.split("-")
+    if len(parts) != 4:
+        return None
+    _, exp_str, strike_str, kind = parts
+    if kind not in ("C", "P"):
+        return None
+    try:
+        exp = datetime.datetime.strptime(exp_str, "%d%b%y").date()
+        strike = int(strike_str)
+        return (exp, strike, kind)
+    except ValueError:
+        return None
+
+
+def _deribit_fetch_options(currency):
+    """Тягне всю опціонну книгу для currency. Returns list of {expiry, strike, kind, oi}."""
+    try:
+        url = f"https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency={currency}&kind=option"
+        r = requests.get(url, timeout=15)
+        if r.status_code != 200:
+            print(f"❌ Deribit options HTTP {r.status_code} for {currency}")
+            return []
+        items = r.json().get("result", []) or []
+        out = []
+        for item in items:
+            parsed = _parse_deribit_instrument(item.get("instrument_name", ""))
+            if not parsed:
+                continue
+            exp, strike, kind = parsed
+            out.append({
+                "expiry": exp,
+                "strike": strike,
+                "kind": kind,
+                "oi": float(item.get("open_interest") or 0),
+            })
+        return out
+    except Exception as e:
+        print(f"❌ Deribit options fetch error for {currency}: {e}")
+        return []
+
+
+def _deribit_index_price(currency):
+    """BTC/ETH → поточна спот-ціна проти USD."""
+    try:
+        idx = f"{currency.lower()}_usd"
+        url = f"https://www.deribit.com/api/v2/public/get_index_price?index_name={idx}"
+        r = requests.get(url, timeout=10)
+        return float(r.json().get("result", {}).get("index_price") or 0)
+    except Exception as e:
+        print(f"❌ Deribit index price error for {currency}: {e}")
+        return 0.0
+
+
+def _is_last_friday_of_month(d):
+    return d.weekday() == 4 and (d + datetime.timedelta(days=7)).month != d.month
+
+
+def _pick_expirations(options):
+    """Тижнева = nearest п'ятниця (канонічна "weekly" Deribit, не щоденна).
+    Місячна = nearest остання-п'ятниця-місяця після weekly.
+    Fallback monthly — будь-яка експірація щонайменше через 14 днів від weekly."""
+    today = datetime.date.today()
+    all_exps = sorted(set(o["expiry"] for o in options if o["expiry"] >= today))
+    if not all_exps:
+        return None, None
+    weekly = next((e for e in all_exps if e.weekday() == 4), all_exps[0])
+    monthly = None
+    for e in all_exps:
+        if e <= weekly:
+            continue
+        if _is_last_friday_of_month(e):
+            monthly = e
+            break
+    if monthly is None:
+        for e in all_exps:
+            if (e - weekly).days >= 14:
+                monthly = e
+                break
+    return weekly, monthly
+
+
+def _analyze_expiration(opts_for_exp):
+    """Повертає {max_pain, pcr, call_wall, call_wall_oi, put_wall, put_wall_oi}."""
+    strikes = sorted(set(o["strike"] for o in opts_for_exp))
+    if not strikes:
+        return None
+
+    # Max Pain — страйк де мінімізується сумарний payoff холдерам
+    min_pain = None
+    max_pain_strike = strikes[0]
+    for S in strikes:
+        pain = 0.0
+        for o in opts_for_exp:
+            if o["kind"] == "C" and S > o["strike"]:
+                pain += (S - o["strike"]) * o["oi"]
+            elif o["kind"] == "P" and o["strike"] > S:
+                pain += (o["strike"] - S) * o["oi"]
+        if min_pain is None or pain < min_pain:
+            min_pain = pain
+            max_pain_strike = S
+
+    # PCR + walls
+    call_oi_by_strike, put_oi_by_strike = {}, {}
+    total_call_oi, total_put_oi = 0.0, 0.0
+    for o in opts_for_exp:
+        if o["kind"] == "C":
+            call_oi_by_strike[o["strike"]] = call_oi_by_strike.get(o["strike"], 0) + o["oi"]
+            total_call_oi += o["oi"]
+        else:
+            put_oi_by_strike[o["strike"]] = put_oi_by_strike.get(o["strike"], 0) + o["oi"]
+            total_put_oi += o["oi"]
+
+    pcr = total_put_oi / total_call_oi if total_call_oi > 0 else None
+    call_wall = max(call_oi_by_strike.items(), key=lambda x: x[1]) if call_oi_by_strike else (None, 0)
+    put_wall = max(put_oi_by_strike.items(), key=lambda x: x[1]) if put_oi_by_strike else (None, 0)
+
+    return {
+        "max_pain": max_pain_strike,
+        "pcr": pcr,
+        "call_wall": call_wall[0],
+        "call_wall_oi": call_wall[1],
+        "put_wall": put_wall[0],
+        "put_wall_oi": put_wall[1],
+    }
+
+
+def _pcr_label(pcr):
+    """PCR > 1.0 — ведмежі, < 0.7 — бичачі, інакше нейтрально."""
+    if pcr is None:
+        return "—"
+    if pcr > 1.0:
+        return f"{pcr:.2f} 🔴 Ведмежі настрої"
+    if pcr < 0.7:
+        return f"{pcr:.2f} 🟢 Бичачі настрої"
+    return f"{pcr:.2f} ⚖️ Нейтральні"
+
+
+def _options_ai_commentary(asset, current, weekly_data, monthly_data, weekly_exp_str, monthly_exp_str):
+    """2 речення прогнозу від Gemini. Empty якщо ШІ заблокований/упав."""
+    pcr_w = weekly_data.get("pcr")
+    pcr_w_str = f"{pcr_w:.2f}" if pcr_w is not None else "N/A"
+
+    monthly_block = ""
+    if monthly_data and monthly_exp_str:
+        pcr_m = monthly_data.get("pcr")
+        pcr_m_str = f"{pcr_m:.2f}" if pcr_m is not None else "N/A"
+        monthly_block = (
+            f"\nМісячна ({monthly_exp_str}):\n"
+            f"- Max Pain: ${monthly_data['max_pain']:,}\n"
+            f"- PCR: {pcr_m_str}"
+        )
+
+    prompt = (
+        f"Ти трейдинг-аналітик. Проаналізуй опціонні рівні для {asset} і напиши "
+        f"РОВНО 2 речення прогнозу українською. БЕЗ списків, БЕЗ markdown, БЕЗ заголовків.\n\n"
+        f"Дані:\n"
+        f"Поточна ціна {asset}: ${current:,.0f}\n\n"
+        f"Тижнева експірація ({weekly_exp_str}):\n"
+        f"- Max Pain: ${weekly_data['max_pain']:,}\n"
+        f"- Put/Call Ratio: {pcr_w_str}\n"
+        f"- Стіна опору (Calls): ${weekly_data['call_wall']:,}\n"
+        f"- Стіна підтримки (Puts): ${weekly_data['put_wall']:,}"
+        f"{monthly_block}\n\n"
+        f"Прогноз (РОВНО 2 речення):"
+    )
+    return _sanitize_ai_text(call_gemini_ai(prompt), max_chars=350)
+
+
+def _build_options_post(asset, current, weekly_data, monthly_data, weekly_exp, monthly_exp, ai_comment):
+    today = datetime.date.today()
+
+    def block(label, exp, data):
+        if not data or not exp:
+            return ""
+        days = (exp - today).days
+        days_str = f"+{days}д" if days > 0 else "сьогодні"
+        mp = data["max_pain"]
+        mp_diff_pct = ((mp - current) / current * 100) if current > 0 else 0
+        sign = "+" if mp_diff_pct > 0 else ""
+        return (
+            f"📅 {label} ({_fmt_date_ua(exp)}, {days_str})\n"
+            f"🎯 Max Pain: ${mp:,} ({sign}{mp_diff_pct:.1f}%)\n"
+            f"⚖️ PCR: {_pcr_label(data['pcr'])}\n"
+            f"🧱 Стіна опору: ${data['call_wall']:,} (OI {_fmt_oi(data['call_wall_oi'])})\n"
+            f"🛡 Стіна підтримки: ${data['put_wall']:,} (OI {_fmt_oi(data['put_wall_oi'])})\n"
+        )
+
+    weekly_block = block("Тижнева експірація", weekly_exp, weekly_data)
+    monthly_block = block("Місячна експірація", monthly_exp, monthly_data)
+    ai_line = f"\n🗣 {ai_comment}\n" if ai_comment else ""
+
+    return (
+        f"📊 ОПЦІОННИЙ ДЕСК: {asset}\n\n"
+        f"💰 Спот: ${current:,.0f}\n\n"
+        f"{weekly_block}"
+        f"\n{monthly_block}"
+        f"{ai_line}"
+        f"\n#optionsdesk #{asset}"
+    )
+
+
+def post_options_desk():
+    """Постить опціонний деск (BTC + ETH) у понеділок та п'ятницю о 10:00 Київ.
+
+    Тестовий режим: env OPTIONS_TEST_NOW=1 → одразу один пост, ігнорує розклад.
+    Прибери змінну після тесту — інакше рестарт = повтор."""
+    global posted_options_dates, _options_test_done
+
+    force = os.environ.get("OPTIONS_TEST_NOW", "").lower() in ("1", "true", "yes")
+    now_kyiv = datetime.datetime.now(KYIV_TZ)
+    date_key = now_kyiv.date().isoformat()
+
+    if force:
+        if _options_test_done:
+            return False
+        print("⚙️ OPTIONS_TEST_NOW=1 — тестовий пост опціонного деска")
+    else:
+        if now_kyiv.weekday() not in (0, 4):  # Mon=0, Fri=4
+            return False
+        if now_kyiv.hour != 10:  # слот 10:00-10:59 Київ
+            return False
+        if date_key in posted_options_dates:
+            return False
+        print(f"⏰ Options desk slot — {now_kyiv.strftime('%a %H:%M')} Київ")
+
+    for i, currency in enumerate(OPTIONS_CURRENCIES):
+        try:
+            options = _deribit_fetch_options(currency)
+            if not options:
+                print(f"⚠️ Options {currency}: empty chain, skip")
+                continue
+
+            current = _deribit_index_price(currency)
+            if current <= 0:
+                print(f"⚠️ Options {currency}: no spot price, skip")
+                continue
+
+            weekly_exp, monthly_exp = _pick_expirations(options)
+            if not weekly_exp:
+                print(f"⚠️ Options {currency}: no upcoming expirations, skip")
+                continue
+
+            weekly_data = _analyze_expiration([o for o in options if o["expiry"] == weekly_exp])
+            monthly_data = _analyze_expiration([o for o in options if o["expiry"] == monthly_exp]) if monthly_exp else None
+
+            ai = _options_ai_commentary(
+                currency, current, weekly_data, monthly_data,
+                _fmt_date_ua(weekly_exp),
+                _fmt_date_ua(monthly_exp) if monthly_exp else None,
+            )
+
+            post = _build_options_post(currency, current, weekly_data, monthly_data, weekly_exp, monthly_exp, ai)
+            send_to_telegram(post)
+            print(f"✅ Options desk posted: {currency} (weekly={weekly_exp}, monthly={monthly_exp})")
+
+            # 1 хв пауза між BTC та ETH (анти-флуд)
+            if i < len(OPTIONS_CURRENCIES) - 1:
+                time.sleep(60)
+        except Exception as e:
+            print(f"❌ Options desk error for {currency}: {e}")
+
+    if force:
+        _options_test_done = True
+    else:
+        posted_options_dates.add(date_key)
+    return True
 
 
 def send_low_priority_digest():
@@ -1036,7 +1339,7 @@ def post_cot_reports():
 
 
 def main():
-    global last_post_time, last_medium_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_slot, pending_actual_fetches, last_cot_release_date, posted_earnings, _earnings_test_done
+    global last_post_time, last_medium_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_slot, pending_actual_fetches, last_cot_release_date, posted_earnings, _earnings_test_done, posted_options_dates, _options_test_done
 
     last_update = 0
     events = []
@@ -1453,6 +1756,12 @@ Assets:
             post_earnings_reports()
         except Exception as e:
             print(f"❌ Earnings top-level error: {e}")
+
+        # === OPTIONS DESK (BTC/ETH аналітика опціонів, Пн+Пт 10:00 Київ) ===
+        try:
+            post_options_desk()
+        except Exception as e:
+            print(f"❌ Options desk top-level error: {e}")
 
         # ⏸ Не спінити CPU — чекаємо хвилину перед наступним циклом
         print("⏸ Sleeping 60s before next cycle...")

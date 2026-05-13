@@ -17,6 +17,7 @@ Telegram-бот для трейдерів. Парсить економічний
 | Pollinations AI | Генерація картинок для HIGH-новин і дайджесту | `generate_ai_image()` через `image.pollinations.ai` |
 | **CFTC через `cot_reports`** | COT звіти (тижневі позиції хедж-фондів) | `post_cot_reports()`, бібліотека `cot_reports` |
 | **Finnhub Earnings Calendar API** | Квартальна звітність акцій (Revenue + EPS actual/estimate) | `post_earnings_reports()` через `/calendar/earnings` |
+| **Deribit public API** | Опціонна аналітика BTC/ETH (Max Pain, PCR, Walls) | `post_options_desk()` через `/get_book_summary_by_currency` + `/get_index_price` |
 
 ### ENV variables
 
@@ -150,6 +151,51 @@ Guard `_earnings_test_done` блокує повтор у тій же сесії.
 - **Revenue в нативній валюті** — для US-акцій USD, для китайських ADR Finnhub теж повертає USD. Якщо колись треба буде показати CNY/EUR — додати `currency` поле з `_fmt_money`.
 - **Дедуп при рестарті**: `posted_earnings` скидається. Якщо контейнер рестартує в межах того ж дня — є шанс повторного посту за тим самим ключем. Але вікно фетчу [today-1, today+1] → теоретично повтор можливий. Якщо це почне траплятись — додати персистентність (Redis або файл).
 
+## Options Desk (BTC/ETH опціонна аналітика)
+
+Джерело: **Deribit public API** (без ключа). Дві ендпоінтні точки:
+- `/api/v2/public/get_book_summary_by_currency?currency=BTC&kind=option` — повна опціонна книга з Open Interest
+- `/api/v2/public/get_index_price?index_name=btc_usd` — поточний спот
+
+`post_options_desk()` запускається на кожній ітерації main, але виходить раніше якщо:
+- День тижня ≠ понеділок (0) і ≠ п'ятниця (4)
+- Година ≠ 10 за київським часом
+- Дата вже в `posted_options_dates`
+
+При спрацьовуванні слоту — постить BTC, потім через 60 сек ETH.
+
+### Метрики
+
+Для кожної з двох експірацій:
+1. **Max Pain** — страйк що мінімізує сумарний payoff холдерам опціонів (формула: `Σ max(0, S−K_call)·OI + Σ max(0, K_put−S)·OI`, ітеруємо по всіх страйках, беремо min)
+2. **PCR (Put/Call Ratio)** — `total_put_OI / total_call_OI`. Лейбли:
+   - `> 1.0` → 🔴 Ведмежі настрої
+   - `< 0.7` → 🟢 Бичачі настрої
+   - інакше → ⚖️ Нейтральні
+3. **Call Wall** — страйк з найбільшим OI кол-опціонів (рівень опору, маркетмейкери захищають)
+4. **Put Wall** — страйк з найбільшим OI пут-опціонів (рівень підтримки)
+
+### Вибір експірацій
+
+`_pick_expirations()`:
+- **Тижнева** = nearest п'ятниця ≥ сьогодні. Не nearest *будь-яка* експірація, бо Deribit має щоденні опціони, а канонічна "weekly" — це п'ятниця.
+- **Місячна** = nearest остання-п'ятниця-місяця після weekly. Fallback — будь-яка експірація щонайменше через 14 днів від weekly.
+
+### AI коментар
+
+`_options_ai_commentary()` → Gemini → `_sanitize_ai_text` (як у COT). 2 речення українською, без markdown/списків. Якщо Gemini заблокований/упав — пост без `🗣` рядка.
+
+### Тестовий перемикач
+
+`OPTIONS_TEST_NOW=1` у Railway Variables — постить одразу обидва (BTC + ETH), ігнорує розклад. Guard `_options_test_done` — один пост за запуск контейнера. **Прибери після тесту!**
+
+### Граблі / обмеження v1
+
+- **Тільки крипта**. Традиційні активи (Gold, EUR, S&P, WTI) потребують CME / Coinglass платний API. Не реалізовано.
+- **GEX (Gamma Exposure)** не рахуємо. Потребує greeks для кожного інструмента — це 100+ API-калів і ризик rate-limit Deribit. Можна додати v2 через окремий ендпоінт `/get_option_data`.
+- **Daily expirations** Deribit BTC можуть бути будь-якого дня тижня (включаючи Sat/Sun). Тому беремо саме nearest **Friday** як weekly, а не nearest expiration.
+- Дедуп: `posted_options_dates` скидається при рестарті. Якщо контейнер рестартує між 10:00 і 11:00 у понеділок/п'ятницю — є шанс повторного посту. Малоймовірно (Railway рестарти рідкі), але можна додати персистентність.
+
 ## Економічний календар (через Finnhub)
 
 Джерело: `https://finnhub.io/api/v1/calendar/economic` (free tier, 60 req/min). Раніше використовували static XML feed від `nfs.faireconomy.media`, але він відставав на 10-15 хв і ми пропускали FactNews. Finnhub оновлює дані близько до реал-тайму.
@@ -237,7 +283,7 @@ Railway підхопить з GitHub автоматично за 1-2 хв. Пе�
 ## Загальні зауваження
 
 - **Часова зона**: код використовує `datetime.datetime.now()` без tz — це серверний час (Railway = UTC). Київ зимою = UTC+2, влітку = UTC+3.
-- **Стан в пам'яті, не персистентний**: `posted_news`, `posted_events`, `posted_earnings`, `low_priority_news`, `last_sent_slot`, `last_medium_time`, `pending_actual_fetches`, `gemini_blocked_until` — все скидається при рестарті контейнера. Це OK для коротких вікон (PreNews/MAIN <30 хв), не OK для дайджесту якщо рестарт стається часто.
+- **Стан в пам'яті, не персистентний**: `posted_news`, `posted_events`, `posted_earnings`, `posted_options_dates`, `low_priority_news`, `last_sent_slot`, `last_medium_time`, `pending_actual_fetches`, `gemini_blocked_until` — все скидається при рестарті контейнера. Це OK для коротких вікон (PreNews/MAIN <30 хв), не OK для дайджесту якщо рестарт стається часто.
 - **Gemini spend cap**: бажано встановити в AI Studio → Set spend cap (наприклад $5/місяць) як safety net проти runaway costs. Раніше один зациклений лоп з'їв ~$8 за пару днів.
 - **Pollinations** безкоштовний, без API ключа, але може повертати не-картинку (HTML/помилку) — є фолбек на `FALLBACK_IMAGE_URL` (Unsplash).
 
@@ -253,6 +299,7 @@ Railway підхопить з GitHub автоматично за 1-2 хв. Пе�
 | Дайджест | `#digest` |
 | COT Report | `#cotreport #{TICKER}` (напр. `#cotreport #XAUUSD`) |
 | Earnings | `#{SYMBOL} #earnings #звітність` (напр. `#AAPL #earnings #звітність`) |
+| Options Desk | `#optionsdesk #{CURRENCY}` (напр. `#optionsdesk #BTC`) |
 
 ### HIGH (з картинкою)
 ```
@@ -327,6 +374,29 @@ APPLE INC.
 
 Виторг: $94.93B vs $94.10B ✅ (+0.9%)
 EPS:    $1.64 vs $1.59 ✅ (+3.1%)
+```
+
+### Options Desk (текст)
+```
+📊 ОПЦІОННИЙ ДЕСК: BTC
+
+💰 Спот: $81,145
+
+📅 Тижнева експірація (15 травня, +2д)
+🎯 Max Pain: $80,000 (-1.4%)
+⚖️ PCR: 0.65 🟢 Бичачі настрої
+🧱 Стіна опору: $85,000 (OI 1.6K)
+🛡 Стіна підтримки: $72,000 (OI 1.4K)
+
+📅 Місячна експірація (29 травня, +16д)
+🎯 Max Pain: $75,000 (-7.6%)
+⚖️ PCR: 0.71 ⚖️ Нейтральні
+🧱 Стіна опору: $80,000 (OI 7.0K)
+🛡 Стіна підтримки: $70,000 (OI 3.6K)
+
+🗣 {AI 2 речення прогноз українською}
+
+#optionsdesk #BTC
 ```
 
 ## Що не використовується / dead code
