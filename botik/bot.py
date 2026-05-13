@@ -630,7 +630,7 @@ def _pcr_label(pcr):
 
 
 def _options_ai_commentary(asset, current, weekly_data, monthly_data, weekly_exp_str, monthly_exp_str):
-    """2 речення прогнозу від Gemini. Empty якщо ШІ заблокований/упав."""
+    """ОДНЕ коротке речення-висновок від Gemini. Empty якщо ШІ заблокований/упав."""
     pcr_w = weekly_data.get("pcr")
     pcr_w_str = f"{pcr_w:.2f}" if pcr_w is not None else "N/A"
 
@@ -645,19 +645,20 @@ def _options_ai_commentary(asset, current, weekly_data, monthly_data, weekly_exp
         )
 
     prompt = (
-        f"Ти трейдинг-аналітик. Проаналізуй опціонні рівні для {asset} і напиши "
-        f"РОВНО 2 речення прогнозу українською. БЕЗ списків, БЕЗ markdown, БЕЗ заголовків.\n\n"
+        f"Ти трейдинг-аналітик. На основі опціонних рівнів {asset} напиши "
+        f"ОДНЕ КОРОТКЕ речення-висновок українською (макс 150 символів). "
+        f"БЕЗ списків, БЕЗ markdown, БЕЗ заголовків, БЕЗ вступних слів типу 'На основі...'.\n\n"
         f"Дані:\n"
         f"Поточна ціна {asset}: ${current:,.0f}\n\n"
-        f"Тижнева експірація ({weekly_exp_str}):\n"
+        f"Тижнева ({weekly_exp_str}):\n"
         f"- Max Pain: ${weekly_data['max_pain']:,}\n"
-        f"- Put/Call Ratio: {pcr_w_str}\n"
-        f"- Стіна опору (Calls): ${weekly_data['call_wall']:,}\n"
-        f"- Стіна підтримки (Puts): ${weekly_data['put_wall']:,}"
+        f"- PCR: {pcr_w_str}\n"
+        f"- Стіна опору: ${weekly_data['call_wall']:,}\n"
+        f"- Стіна підтримки: ${weekly_data['put_wall']:,}"
         f"{monthly_block}\n\n"
-        f"Прогноз (РОВНО 2 речення):"
+        f"Висновок (1 речення, макс 150 символів):"
     )
-    return _sanitize_ai_text(call_gemini_ai(prompt), max_chars=350)
+    return _sanitize_ai_text(call_gemini_ai(prompt), max_chars=170)
 
 
 def _build_options_post(asset, current, weekly_data, monthly_data, weekly_exp, monthly_exp, ai_comment):
@@ -672,11 +673,11 @@ def _build_options_post(asset, current, weekly_data, monthly_data, weekly_exp, m
         mp_diff_pct = ((mp - current) / current * 100) if current > 0 else 0
         sign = "+" if mp_diff_pct > 0 else ""
         return (
-            f"📅 {label} ({_fmt_date_ua(exp)}, {days_str})\n"
-            f"🎯 Max Pain: ${mp:,} ({sign}{mp_diff_pct:.1f}%)\n"
-            f"⚖️ PCR: {_pcr_label(data['pcr'])}\n"
-            f"🧱 Стіна опору: ${data['call_wall']:,} (OI {_fmt_oi(data['call_wall_oi'])})\n"
-            f"🛡 Стіна підтримки: ${data['put_wall']:,} (OI {_fmt_oi(data['put_wall_oi'])})\n"
+            f"📅 *{label}* ({_fmt_date_ua(exp)}, {days_str})\n"
+            f"🎯 *Max Pain*: ${mp:,} ({sign}{mp_diff_pct:.1f}%)\n"
+            f"⚖️ *PCR*: {_pcr_label(data['pcr'])}\n"
+            f"🧱 *Стіна опору*: ${data['call_wall']:,} (OI {_fmt_oi(data['call_wall_oi'])})\n"
+            f"🛡 *Стіна підтримки*: ${data['put_wall']:,} (OI {_fmt_oi(data['put_wall_oi'])})\n"
         )
 
     weekly_block = block("Тижнева експірація", weekly_exp, weekly_data)
@@ -684,13 +685,27 @@ def _build_options_post(asset, current, weekly_data, monthly_data, weekly_exp, m
     ai_line = f"\n🗣 {ai_comment}\n" if ai_comment else ""
 
     return (
-        f"📊 ОПЦІОННИЙ ДЕСК: {asset}\n\n"
+        f"📊 *ОПЦІОННИЙ ДЕСК: {asset}*\n\n"
         f"💰 Спот: ${current:,.0f}\n\n"
         f"{weekly_block}"
         f"\n{monthly_block}"
         f"{ai_line}"
         f"\n#optionsdesk #{asset}"
     )
+
+
+OPTIONS_IMAGE_PROMPTS = {
+    "BTC": (
+        "cinematic 3D render of Bitcoin options trading desk, glowing orange and gold neon accents, "
+        "abstract candlestick chart and option chain matrix in background, dark cyberpunk financial terminal, "
+        "professional Bloomberg-style aesthetic, 8k photorealistic, sharp focus, octane render."
+    ),
+    "ETH": (
+        "cinematic 3D render of Ethereum options analytics dashboard, glowing electric blue and purple neon accents, "
+        "abstract derivatives matrix and strike levels visualization, dark cyberpunk financial terminal, "
+        "professional Bloomberg-style aesthetic, 8k photorealistic, sharp focus, octane render."
+    ),
+}
 
 
 def post_options_desk():
@@ -744,7 +759,14 @@ def post_options_desk():
             )
 
             post = _build_options_post(currency, current, weekly_data, monthly_data, weekly_exp, monthly_exp, ai)
-            send_to_telegram(post)
+
+            # Картинка через Pollinations (тематична по валюті). Фолбек — текст без фото.
+            image_prompt = OPTIONS_IMAGE_PROMPTS.get(currency, OPTIONS_IMAGE_PROMPTS["BTC"])
+            image = generate_ai_image(image_prompt)
+            sent = send_photo_to_telegram(image, post, parse_mode="Markdown")
+            if not sent:
+                print(f"⚠️ Options {currency}: фото не доставлено → шлю текст")
+                send_to_telegram(post)
             print(f"✅ Options desk posted: {currency} (weekly={weekly_exp}, monthly={monthly_exp})")
 
             # 1 хв пауза між BTC та ETH (анти-флуд)
