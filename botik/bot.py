@@ -10,6 +10,7 @@ import random
 import urllib.parse
 import warnings
 import io
+from zoneinfo import ZoneInfo
 from bs4 import XMLParsedAsHTMLWarning
 from google import genai
 
@@ -39,8 +40,10 @@ posted_events = set()
 # Точкова перевірка ForexFactory після події (для отримання Actual)
 pending_actual_fetches = {}
 
-DIGEST_HOURS = [9, 13, 14, 17, 21]  # Години для відправки
-last_sent_hour = -1
+KYIV_TZ = ZoneInfo("Europe/Kyiv")
+# Слоти дайджесту у київському часі: ранок (Азія), США відкриття, вечір
+DIGEST_TIMES_KYIV = [(9, 0), (15, 30), (19, 0)]
+last_sent_slot = None  # ключ "YYYY-MM-DD_HH:MM" останнього відправленого слоту
 
 # === COT (Commitments of Traders) ===
 # display_name → (ticker для поста, pattern для матчингу у Market_and_Exchange_Names)
@@ -866,7 +869,7 @@ def post_cot_reports():
 
 
 def main():
-    global last_post_time, last_medium_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_hour, pending_actual_fetches, last_cot_release_date
+    global last_post_time, last_medium_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_slot, pending_actual_fetches, last_cot_release_date
 
     last_update = 0
     events = []
@@ -1244,23 +1247,31 @@ Assets:
                     print("Error:", e)
 
         # === ДАЙДЖЕСТ (поза циклом RSS, раз на ітерацію main) ===
-        current_time_dt = datetime.datetime.now()
-        current_hour = current_time_dt.hour
+        now_kyiv = datetime.datetime.now(KYIV_TZ)
+        current_minutes_kyiv = now_kyiv.hour * 60 + now_kyiv.minute
+        today_kyiv = now_kyiv.date().isoformat()
 
-        if current_hour in DIGEST_HOURS and current_hour != last_sent_hour:
+        for slot_h, slot_m in DIGEST_TIMES_KYIV:
+            slot_start = slot_h * 60 + slot_m
+            # Вікно слоту — 60 хв від запланованого часу (щоб наздогнати після рестарту)
+            if not (slot_start <= current_minutes_kyiv < slot_start + 60):
+                continue
+            slot_label = f"{slot_h:02d}:{slot_m:02d}"
+            slot_key = f"{today_kyiv}_{slot_label}"
+            if last_sent_slot == slot_key:
+                break  # цей слот уже відправлений сьогодні
             if len(low_priority_news) >= 10:
-                print(f"⏰ Час дайджесту ({current_hour}:00)! Новин: {len(low_priority_news)}")
-
+                print(f"⏰ Час дайджесту ({slot_label} Київ)! Новин: {len(low_priority_news)}")
                 success = send_low_priority_digest()
-
                 if success:
                     low_priority_news.clear()
-                    last_sent_hour = current_hour
+                    last_sent_slot = slot_key
                     print("DEBUG: Дайджест відправлено, список очищено.")
                 else:
                     print(f"⚠️ Дайджест НЕ відправлено (ШІ/Telegram не відповів). Новини збережено до наступного слоту.")
             else:
-                print(f"⏳ Час {current_hour}:00 підійшов, але новин мало ({len(low_priority_news)}/10). Чекаємо.")
+                print(f"⏳ Слот {slot_label} Київ підійшов, але новин мало ({len(low_priority_news)}/10). Чекаємо.")
+            break
 
         # === COT REPORT (раз на тиждень, п'ятниця ≥21:00 UTC) ===
         try:

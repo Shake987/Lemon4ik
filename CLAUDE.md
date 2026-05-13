@@ -61,15 +61,20 @@ cot_reports, pandas, matplotlib
 
 ### Дайджест
 
-- Слоти: `DIGEST_HOURS = [9, 13, 14, 17, 21]` у **UTC** (Railway за замовчуванням UTC)
-- Умова відправки: `current_hour ∈ DIGEST_HOURS AND last_sent_hour != current_hour AND len(low_priority_news) >= 10`
+- Слоти: `DIGEST_TIMES_KYIV = [(9, 0), (15, 30), (19, 0)]` у **київському часі** (через `ZoneInfo("Europe/Kyiv")`, DST враховано автоматично)
+  - 09:00 Київ — ранковий, опираючись на азійську сесію
+  - 15:30 Київ — відкриття США
+  - 19:00 Київ — вечір
+- Вікно слоту — **60 хв** від запланованого часу (щоб бот міг наздогнати дайджест після рестарту в межах години)
+- Умова відправки: `slot_start ≤ current_minutes_kyiv < slot_start + 60 AND slot_key != last_sent_slot AND len(low_priority_news) >= 10`
 - Викликає `send_low_priority_digest()`, яка:
   1. Просить Gemini проаналізувати останні 30 новин і повернути `MOOD: ...` + `SUMMARY: ...`
   2. Генерує картинку (Bullish — зелений тейпсетап, Bearish/Neutral — темний неон)
   3. Шле `send_photo_to_telegram` з caption ≤ 1024 символів
 - **Повертає `True/False`**:
-  - `True` → main очищує `low_priority_news`, ставить `last_sent_hour`
+  - `True` → main очищує `low_priority_news`, ставить `last_sent_slot = "YYYY-MM-DD_HH:MM"` (не дасть двічі відправити той самий слот того ж дня)
   - `False` (ШІ не відповів АБО Telegram не прийняв) → новини **залишаються** до наступного слоту
+- `tzdata` у requirements.txt — Railway-контейнер інколи без системних таймзон, без цього `ZoneInfo` крешне
 
 ## COT Report (тижневі позиції хедж-фондів)
 
@@ -93,11 +98,38 @@ cot_reports, pandas, matplotlib
 
 Стан в пам'яті: `last_cot_release_date` (дата останнього `As_of_Date_In_Form_YYMMDD`). Не постимо повторно якщо дата збігається.
 
-## Логіка ForexFactory подій
+### Тестовий перемикач
 
-Подія: `title, currency, impact, time, actual, forecast, previous`. Фільтри:
-- `currency` лише `[USD, EUR, GBP, XAU, BTC, ETH, OIL]`
-- Skip `impact == "low"`
+`COT_TEST_NOW=1` у Railway Variables — обходить guard "тільки п'ятниця ≥21 UTC", постить одразу при наступному циклі. **Обов'язково видалити після тесту** — інакше кожен рестарт контейнера буде заново публікувати 5 ринків (бо `last_cot_release_date` скидається при рестарті).
+
+### Граблі, на які наступали (не повторювати)
+
+- **MICRO/E-MICRO контракти** треба явно виключити з матчингу — інакше для GOLD/BTC/S&P беруться неправильні дані (інший номінал контракту, інші об'єми). Виключення через regex `\bMICRO\b|\bE-MICRO\b` у `_extract_market()`.
+- **pandas `to_datetime` на int** інтерпретує число як наносекунди з Unix epoch → дата `1970-01-01`. Завжди `.astype(str)` перед парсингом дати з CFTC колонок.
+- **Telegram Markdown ламається** на незбалансованих `*` (часто від AI). Для COT-постів використовуємо `parse_mode=None` (plain text), бо Gemini у відповіді часом вкладає bullet-list з зірочками.
+- **Gemini може дати "роман"** замість 2 речень — стримуємо жорстким промтом ("РОВНО 2 речення, БЕЗ списків, БЕЗ заголовків") + `_sanitize_ai_text()` ще раз чистить markdown і обрізає до 350 симв.
+
+## Економічний календар (через Finnhub)
+
+Джерело: `https://finnhub.io/api/v1/calendar/economic` (free tier, 60 req/min). Раніше використовували static XML feed від `nfs.faireconomy.media`, але він відставав на 10-15 хв і ми пропускали FactNews. Finnhub оновлює дані близько до реал-тайму.
+
+### Фільтр валют
+
+Country code → currency мапінг у `FINNHUB_COUNTRY_TO_CURRENCY`:
+
+| Country code | Currency | Які impact постимо |
+|---|---|---|
+| US | USD | High + Medium |
+| EU | EUR | High + Medium |
+| GB | GBP | High + Medium |
+| JP | JPY | тільки High (через `FINNHUB_HIGH_ONLY_COUNTRIES`) |
+| CA | CAD | тільки High |
+| AU | AUD | тільки High |
+
+Інші країни — пропускаються в `get_forexfactory_events()` (назва функції збережена historically, реально працює через Finnhub).
+
+Подія повертається у форматі: `{title, currency, impact, time, actual, forecast, previous}`. Далі у main loop:
+- Skip `impact.lower() == "low"`
 - Skip події, які >2 год вперед
 
 ### PreNews
@@ -105,7 +137,7 @@ cot_reports, pandas, matplotlib
 - Вікно `0 < minutes_to_event ≤ 5`
 - ID: `title + currency + impact + "_PRE"`
 - Шле сценарій (`Strong inflation → USD ↑ / Gold ↓`)
-- **Планує точковий фетч** ForexFactory на `event_time + 4 хв` (через `pending_actual_fetches`)
+- **Планує точковий фетч** Finnhub на `event_time + 4 хв` (через `pending_actual_fetches`)
 
 ### FactNews / MAIN
 
@@ -114,10 +146,10 @@ cot_reports, pandas, matplotlib
 - Якщо `actual` порожній і не speech-подія → `continue`, чекаємо наступну ітерацію
 - Шле блок з Actual / Forecast / Previous + напрямок (`📈 ABOVE FORECAST`, etc.)
 
-### Точкові фетчі ForexFactory
+### Точкові фетчі календаря
 
-Щоб не довбати ForexFactory і не ловити блок, оновлення йде в двох випадках:
-1. **Раз на 15 хв** (стандартне)
+Оновлення йде у двох випадках:
+1. **Раз на 15 хв** (стандартне планове)
 2. **Точкова перевірка** — після PreNews заплановано `pending_actual_fetches[id]["check_at"] = event_time + 240`. Коли наступив час — один фетч.
 
 Якщо Actual ще не з'явився — **одна додаткова спроба** через 6 хв (`retries=1`). Потім — здаємось і видаляємо з черги.
@@ -159,12 +191,12 @@ Railway підхопить з GitHub автоматично за 1-2 хв. Пе�
 Перші ознаки що все ОК у логах:
 - `START FILE`
 - `⏸ Sleeping 60s before next cycle...` (бот не спінить)
-- На дайджест-годину (UTC): `⏰ Час дайджесту (HH:00)!` або `⏳ Час HH:00 підійшов, але новин мало (X/10)`
+- На дайджест-слот (Київ): `⏰ Час дайджесту (HH:MM Київ)!` або `⏳ Слот HH:MM Київ підійшов, але новин мало (X/10)`
 
 ## Загальні зауваження
 
 - **Часова зона**: код використовує `datetime.datetime.now()` без tz — це серверний час (Railway = UTC). Київ зимою = UTC+2, влітку = UTC+3.
-- **Стан в пам'яті, не персистентний**: `posted_news`, `posted_events`, `low_priority_news`, `last_sent_hour`, `last_medium_time`, `pending_actual_fetches`, `gemini_blocked_until` — все скидається при рестарті контейнера. Це OK для коротких вікон (PreNews/MAIN <30 хв), не OK для дайджесту якщо рестарт стається часто.
+- **Стан в пам'яті, не персистентний**: `posted_news`, `posted_events`, `low_priority_news`, `last_sent_slot`, `last_medium_time`, `pending_actual_fetches`, `gemini_blocked_until` — все скидається при рестарті контейнера. Це OK для коротких вікон (PreNews/MAIN <30 хв), не OK для дайджесту якщо рестарт стається часто.
 - **Gemini spend cap**: бажано встановити в AI Studio → Set spend cap (наприклад $5/місяць) як safety net проти runaway costs. Раніше один зациклений лоп з'їв ~$8 за пару днів.
 - **Pollinations** безкоштовний, без API ключа, але може повертати не-картинку (HTML/помилку) — є фолбек на `FALLBACK_IMAGE_URL` (Unsplash).
 
