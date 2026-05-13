@@ -1154,8 +1154,8 @@ def main():
                     continue
 
                 if impact == "MEDIUM":
-                    # 30-хв тротлінг для MEDIUM (свій лічильник, не блокує HIGH)
-                    if time_since_medium < 1800:
+                    # 90-хв тротлінг для MEDIUM (свій лічильник, не блокує HIGH)
+                    if time_since_medium < 5400:
                         low_priority_news.append(f"🟡 {clean_title}")
                         posted_news.add(news_id)
                         print(f"Medium throttled (last Medium {int(time_since_medium)}s ago) → digest")
