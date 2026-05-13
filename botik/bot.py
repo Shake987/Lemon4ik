@@ -360,7 +360,7 @@ def send_low_priority_digest():
 
     # Telegram sendPhoto caption limit = 1024 chars
     prefix = "📊 **DAILY MARKET SUMMARY (Low Impact)**\n\n"
-    suffix = "\n\n#DailyDigest #MarketUpdate"
+    suffix = "\n\n#digest"
     budget = 1024 - len(prefix) - len(suffix) - 3
     if len(summary) > budget:
         summary = summary[:budget].rstrip() + "..."
@@ -757,7 +757,7 @@ def _build_cot_post(market_name, ticker, series, sentiment_pct, ai_comment, repo
         f"⚖️ Net:    {net:+,}\n"
         f"{sent_line}"
         f"{ai_line}"
-        f"\n#COT #{ticker}"
+        f"\n#cotreport #{ticker}"
     )
 
 
@@ -924,7 +924,7 @@ def main():
             if 0 < minutes_to_event <= 5:
                 event_id = (title + currency + impact + "_PRE").strip()
                 if event_id not in posted_events:
-                    post = f"⏳ Upcoming Event ({int(minutes_to_event)} min)\n\nEvent: {title.upper()}\nCurrency: {currency}\nImpact: {impact.upper()}\n\n🧠 Scenarios:\n{scenario}"
+                    post = f"⏳ Upcoming Event ({int(minutes_to_event)} min)\n\nEvent: {title.upper()}\nCurrency: {currency}\nImpact: {impact.upper()}\n\n🧠 Scenarios:\n{scenario}\n\n#economiccalendar"
                     send_to_telegram(post)
                     posted_events.add(event_id)
                     # Плануємо точковий фетч на T+4 хв після події (для отримання Actual)
@@ -967,7 +967,7 @@ def main():
                         result = "📊 IN LINE"
                         move = "⚖️ No strong move"
 
-                post = f"🚨 Economic Release\n\nEvent: {title.upper()}\nCurrency: {currency}\n\nActual: {actual}\nForecast: {forecast}\nPrevious: {previous}\n\n{result}\n\n{move}"
+                post = f"🚨 Economic Release\n\nEvent: {title.upper()}\nCurrency: {currency}\n\nActual: {actual}\nForecast: {forecast}\nPrevious: {previous}\n\n{result}\n\n{move}\n\n#economiccalendar"
                 send_to_telegram(post)
                 posted_events.add(event_id)
                 # Прибираємо з черги — Actual отримали і опублікували
@@ -1197,6 +1197,7 @@ def main():
                 ua_section = f"\n🗣 {summary_ua}\n" if summary_ua else ""
 
                 display_impact = "🔴 HIGH" if impact == "HIGH" else "🟡 MEDIUM"
+                hashtag_line = "\n#highimpactnews" if impact == "HIGH" else ""
 
                 post = f"""🚨 **Macro Update**
 
@@ -1209,6 +1210,7 @@ Category: {category.upper()}
 {ua_section}
 Assets:
 {assets_text}
+{hashtag_line}
 """
 
                 # Дедуплікація за заголовком тільки для MEDIUM (HIGH завжди йде)

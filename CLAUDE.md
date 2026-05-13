@@ -202,6 +202,16 @@ Railway підхопить з GitHub автоматично за 1-2 хв. Пе�
 
 ## Формати постів (для довідки)
 
+### Хештеги по рубриках
+
+| Тип посту | Хештег |
+|---|---|
+| RSS HIGH (Macro Update) | `#highimpactnews` |
+| RSS MEDIUM | без хештега |
+| Finnhub PreNews + FactNews | `#economiccalendar` |
+| Дайджест | `#digest` |
+| COT Report | `#cotreport #{TICKER}` (напр. `#cotreport #XAUUSD`) |
+
 ### HIGH (з картинкою)
 ```
 🚨 **Macro Update**
@@ -217,10 +227,12 @@ Category: MACRO
 
 Assets:
 💵 USD 🟢↑ | 🥇 Gold 🔴↓ | 📊 Indices 🔴↓
+
+#highimpactnews
 ```
 
 ### MEDIUM (текст)
-Те саме, без `🗣` рядка, `Impact: 🟡 MEDIUM`.
+Те саме, без `🗣` рядка, `Impact: 🟡 MEDIUM`, **без хештега**.
 
 ### PreNews
 ```
@@ -233,6 +245,8 @@ Impact: {HIGH}
 🧠 Scenarios:
 ↑ Strong inflation → USD ↑ / Gold ↓
 ↓ Weak inflation → USD ↓ / Gold ↑
+
+#economiccalendar
 ```
 
 ### FactNews
@@ -249,6 +263,8 @@ Previous: 3.0%
 📈 ABOVE FORECAST
 
 📈 USD ↑ / Gold ↓
+
+#economiccalendar
 ```
 
 ### Дайджест (з картинкою)
@@ -257,7 +273,7 @@ Previous: 3.0%
 
 {AI summary 3-5 речень українською, mood-based image}
 
-#DailyDigest #MarketUpdate
+#digest
 ```
 
 ## Що не використовується / dead code
