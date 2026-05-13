@@ -56,6 +56,30 @@ COT_MARKETS = {
 }
 last_cot_release_date = None  # дата останнього вівторкового звіту, який ми вже опублікували
 
+# === EARNINGS (квартальна звітність акцій) ===
+# symbol → (флаг, відображувана назва)
+EARNINGS_TICKERS = {
+    "AAPL":  ("🇺🇸", "APPLE INC."),
+    "MSFT":  ("🇺🇸", "MICROSOFT CORP."),
+    "GOOGL": ("🇺🇸", "ALPHABET (GOOGLE)"),
+    "AMZN":  ("🇺🇸", "AMAZON.COM"),
+    "META":  ("🇺🇸", "META PLATFORMS"),
+    "NVDA":  ("🇺🇸", "NVIDIA"),
+    "TSLA":  ("🇺🇸", "TESLA"),
+    "BABA":  ("🇨🇳", "ALIBABA GROUP"),
+    "NFLX":  ("🇺🇸", "NETFLIX"),
+    "JPM":   ("🇺🇸", "JPMORGAN CHASE"),
+    "AMD":   ("🇺🇸", "AMD"),
+    "AVGO":  ("🇺🇸", "BROADCOM"),
+    "JD":    ("🇨🇳", "JD.COM"),
+    "COIN":  ("🇺🇸", "COINBASE"),
+    "MSTR":  ("🇺🇸", "STRATEGY (MICROSTRATEGY)"),
+    "PLTR":  ("🇺🇸", "PALANTIR"),
+    "V":     ("🇺🇸", "VISA"),
+}
+posted_earnings = set()  # ключ "SYMBOL_YEAR_Q{Q}"
+_earnings_test_done = False  # guard: EARNINGS_TEST_NOW відправляє лише раз на запуск
+
 
 FALLBACK_IMAGE_URL = "https://images.unsplash.com/photo-1611974717482-98aa003745fc"
 
@@ -289,6 +313,149 @@ def get_forexfactory_events():
 
     print(f"📅 Finnhub: {len(raw_events)} подій всього, {len(events)} після фільтра (US/EU/GB всі; JP/CA/AU тільки HIGH)")
     return events
+
+
+# =========================
+# 📊 EARNINGS REPORTS
+# =========================
+def _fmt_money(v):
+    """94928000000 → '$94.93B', 1.5e12 → '$1.50T', менше млн → '$X,XXX'."""
+    if v is None:
+        return "—"
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    abs_v = abs(v)
+    if abs_v >= 1e12:
+        return f"${v/1e12:.2f}T"
+    if abs_v >= 1e9:
+        return f"${v/1e9:.2f}B"
+    if abs_v >= 1e6:
+        return f"${v/1e6:.2f}M"
+    return f"${v:,.0f}"
+
+
+def _earnings_beat(actual, estimate):
+    """Returns (icon, pct_str). Поріг ±0.05% для розрізнення beat/miss/in-line."""
+    if actual is None or estimate is None:
+        return ("➖", "")
+    try:
+        actual_f = float(actual)
+        estimate_f = float(estimate)
+    except (TypeError, ValueError):
+        return ("➖", "")
+    if estimate_f == 0:
+        return ("➖", "")
+    diff_pct = (actual_f - estimate_f) / abs(estimate_f) * 100
+    if diff_pct > 0.05:
+        return ("✅", f"+{diff_pct:.1f}%")
+    if diff_pct < -0.05:
+        return ("❌", f"{diff_pct:.1f}%")
+    return ("⚖️", "0.0%")
+
+
+def get_earnings_calendar():
+    """Tya earnings з Finnhub за window [today-1, today+1]. Фільтр по EARNINGS_TICKERS."""
+    try:
+        now_utc = datetime.datetime.utcnow()
+        from_date = (now_utc - datetime.timedelta(days=1)).date()
+        to_date = (now_utc + datetime.timedelta(days=1)).date()
+        url = (
+            f"https://finnhub.io/api/v1/calendar/earnings"
+            f"?from={from_date}&to={to_date}&token={FINNHUB_API_KEY}"
+        )
+        r = requests.get(url, timeout=15)
+        if r.status_code != 200:
+            print(f"❌ Earnings API HTTP {r.status_code}")
+            return []
+        data = r.json().get("earningsCalendar", []) or []
+        return [e for e in data if e.get("symbol") in EARNINGS_TICKERS]
+    except Exception as e:
+        print(f"❌ Earnings fetch error: {e}")
+        return []
+
+
+def _build_earnings_post(symbol, eps_actual, eps_est, rev_actual, rev_est, year, quarter):
+    """Будує текст earnings посту. Винесено для повторного використання у тест-моді."""
+    flag, name = EARNINGS_TICKERS[symbol]
+    eps_icon, eps_pct = _earnings_beat(eps_actual, eps_est)
+    rev_icon, rev_pct = _earnings_beat(rev_actual, rev_est)
+
+    rev_line = f"Виторг: {_fmt_money(rev_actual)} vs {_fmt_money(rev_est)} {rev_icon}"
+    if rev_pct:
+        rev_line += f" ({rev_pct})"
+
+    eps_actual_str = f"${float(eps_actual):.2f}"
+    eps_est_str = f"${float(eps_est):.2f}" if eps_est is not None else "—"
+    eps_line = f"EPS:    {eps_actual_str} vs {eps_est_str} {eps_icon}"
+    if eps_pct:
+        eps_line += f" ({eps_pct})"
+
+    return (
+        f"{flag} #{symbol} #earnings #звітність\n\n"
+        f"{name}\n"
+        f"Звіт: Q{quarter} FY{year}\n\n"
+        f"{rev_line}\n"
+        f"{eps_line}"
+    )
+
+
+def post_earnings_reports():
+    """Постить earnings для tracked тікерів, коли вийшов Actual EPS.
+
+    Тестовий режим: env EARNINGS_TEST_NOW=1 → постить ОДИН звіт за запуск контейнера
+    (реальний з календаря, якщо є; інакше моковий AAPL). Прибери змінну після тесту,
+    інакше при наступному рестарті бот знову запостить!"""
+    global posted_earnings, _earnings_test_done
+
+    test_mode = os.environ.get("EARNINGS_TEST_NOW", "").lower() in ("1", "true", "yes")
+    events = get_earnings_calendar()
+
+    if test_mode and not _earnings_test_done:
+        print("⚙️ EARNINGS_TEST_NOW=1 — тестовий пост")
+        # Шукаємо перший реальний звіт із заповненим epsActual
+        for ev in events:
+            if ev.get("epsActual") is not None:
+                post = _build_earnings_post(
+                    ev.get("symbol"), ev.get("epsActual"), ev.get("epsEstimate"),
+                    ev.get("revenueActual"), ev.get("revenueEstimate"),
+                    ev.get("year", ""), ev.get("quarter", ""),
+                )
+                send_to_telegram(post + "\n\n(тестовий пост)")
+                _earnings_test_done = True
+                print(f"✅ TEST Earnings posted (real): {ev.get('symbol')} Q{ev.get('quarter')} {ev.get('year')}")
+                return
+        # Fallback — мокова AAPL Q4 FY2025 з реалістичними цифрами
+        print("ℹ️ TEST: реальних earnings з Actual немає → шлю мок AAPL")
+        post = _build_earnings_post("AAPL", 1.64, 1.59, 94_930_000_000, 94_100_000_000, 2025, 4)
+        send_to_telegram(post + "\n\n(тестовий пост, мокові дані)")
+        _earnings_test_done = True
+        print("✅ TEST Earnings posted (mock AAPL)")
+        return
+
+    for ev in events:
+        symbol = ev.get("symbol")
+        eps_actual = ev.get("epsActual")
+        # Постимо лише коли вийшли реальні цифри (Actual EPS заповнений)
+        if eps_actual is None:
+            continue
+
+        year = ev.get("year", "")
+        quarter = ev.get("quarter", "")
+        key = f"{symbol}_{year}_Q{quarter}"
+        if key in posted_earnings:
+            continue
+
+        post = _build_earnings_post(
+            symbol, eps_actual, ev.get("epsEstimate"),
+            ev.get("revenueActual"), ev.get("revenueEstimate"),
+            year, quarter,
+        )
+        send_to_telegram(post)
+        posted_earnings.add(key)
+        print(f"✅ Earnings posted: {symbol} Q{quarter} {year}")
+
 
 def send_low_priority_digest():
     global low_priority_news, last_digest_time
@@ -869,7 +1036,7 @@ def post_cot_reports():
 
 
 def main():
-    global last_post_time, last_medium_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_slot, pending_actual_fetches, last_cot_release_date
+    global last_post_time, last_medium_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_slot, pending_actual_fetches, last_cot_release_date, posted_earnings, _earnings_test_done
 
     last_update = 0
     events = []
@@ -1280,6 +1447,12 @@ Assets:
             post_cot_reports()
         except Exception as e:
             print(f"❌ COT report top-level error: {e}")
+
+        # === EARNINGS (квартальна звітність акцій) ===
+        try:
+            post_earnings_reports()
+        except Exception as e:
+            print(f"❌ Earnings top-level error: {e}")
 
         # ⏸ Не спінити CPU — чекаємо хвилину перед наступним циклом
         print("⏸ Sleeping 60s before next cycle...")

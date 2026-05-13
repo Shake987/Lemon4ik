@@ -16,6 +16,7 @@ Telegram-бот для трейдерів. Парсить економічний
 | Google Gemini API | UA-переклад HIGH-новин + аналітика дайджесту + COT-коментарі | `call_gemini_ai()`, моделі: `gemini-2.5-flash-lite` (дешева first), `gemini-2.5-flash`, `gemini-2.0-flash` |
 | Pollinations AI | Генерація картинок для HIGH-новин і дайджесту | `generate_ai_image()` через `image.pollinations.ai` |
 | **CFTC через `cot_reports`** | COT звіти (тижневі позиції хедж-фондів) | `post_cot_reports()`, бібліотека `cot_reports` |
+| **Finnhub Earnings Calendar API** | Квартальна звітність акцій (Revenue + EPS actual/estimate) | `post_earnings_reports()` через `/calendar/earnings` |
 
 ### ENV variables
 
@@ -109,6 +110,46 @@ cot_reports, pandas, matplotlib
 - **Telegram Markdown ламається** на незбалансованих `*` (часто від AI). Для COT-постів використовуємо `parse_mode=None` (plain text), бо Gemini у відповіді часом вкладає bullet-list з зірочками.
 - **Gemini може дати "роман"** замість 2 речень — стримуємо жорстким промтом ("РОВНО 2 речення, БЕЗ списків, БЕЗ заголовків") + `_sanitize_ai_text()` ще раз чистить markdown і обрізає до 350 симв.
 
+## Earnings (квартальна звітність акцій)
+
+Джерело: `https://finnhub.io/api/v1/calendar/earnings` (той самий ключ Finnhub, free tier).
+
+Функція `post_earnings_reports()` запускається на кожній ітерації main (раз на хвилину):
+1. Тягне earnings calendar за `[today-1, today+1]` UTC
+2. Фільтрує по `EARNINGS_TICKERS` (17 топ-акцій)
+3. Для кожної події де `epsActual` заповнений (звіт уже вийшов) і ключ `SYMBOL_YEAR_Q{Q}` ще не в `posted_earnings`:
+   - Форматує Revenue (`_fmt_money`: 94.93B / 1.50T / 500M)
+   - Рахує beat/miss % vs estimate (`_earnings_beat`: ✅/❌/⚖️)
+   - Постить плоским текстом через `send_to_telegram` (без Markdown — щоб назви на кшталт `JD.COM` не ламали парсер)
+   - Додає ключ у `posted_earnings`
+
+### Список тікерів (17)
+
+| Категорія | Тікери |
+|---|---|
+| Big Tech US | AAPL, MSFT, GOOGL, AMZN, META, NFLX |
+| AI / Semi | NVDA, AMD, AVGO, PLTR |
+| Auto / Innovation | TSLA |
+| Finance | JPM, V |
+| Crypto-correlated | COIN, MSTR |
+| Chinese ADR | BABA, JD |
+
+Прапор країни — `🇺🇸` або `🇨🇳`, прописаний в `EARNINGS_TICKERS[symbol] = (flag, display_name)`.
+
+### Тестовий перемикач
+
+`EARNINGS_TEST_NOW=1` у Railway Variables — постить ОДИН тестовий пост за запуск контейнера. Логіка fallback:
+1. Якщо у Finnhub-календарі є реальний звіт із заповненим `epsActual` → постить його з підписом `(тестовий пост)`
+2. Якщо немає (між сезонами) → постить моковий AAPL Q4 FY2025 з підписом `(тестовий пост, мокові дані)`
+
+Guard `_earnings_test_done` блокує повтор у тій же сесії. **Прибери змінну після перевірки** — інакше кожен рестарт контейнера буде слати ще один тест.
+
+### Граблі
+
+- **Пре-анонс не робимо** — постимо лише факт. Якщо змінити рішення — паттерн PreNews з Finnhub Economic Calendar можна повторити (тригер за `T-Xmin` від `ev["hour"]`).
+- **Revenue в нативній валюті** — для US-акцій USD, для китайських ADR Finnhub теж повертає USD. Якщо колись треба буде показати CNY/EUR — додати `currency` поле з `_fmt_money`.
+- **Дедуп при рестарті**: `posted_earnings` скидається. Якщо контейнер рестартує в межах того ж дня — є шанс повторного посту за тим самим ключем. Але вікно фетчу [today-1, today+1] → теоретично повтор можливий. Якщо це почне траплятись — додати персистентність (Redis або файл).
+
 ## Економічний календар (через Finnhub)
 
 Джерело: `https://finnhub.io/api/v1/calendar/economic` (free tier, 60 req/min). Раніше використовували static XML feed від `nfs.faireconomy.media`, але він відставав на 10-15 хв і ми пропускали FactNews. Finnhub оновлює дані близько до реал-тайму.
@@ -196,7 +237,7 @@ Railway підхопить з GitHub автоматично за 1-2 хв. Пе�
 ## Загальні зауваження
 
 - **Часова зона**: код використовує `datetime.datetime.now()` без tz — це серверний час (Railway = UTC). Київ зимою = UTC+2, влітку = UTC+3.
-- **Стан в пам'яті, не персистентний**: `posted_news`, `posted_events`, `low_priority_news`, `last_sent_slot`, `last_medium_time`, `pending_actual_fetches`, `gemini_blocked_until` — все скидається при рестарті контейнера. Це OK для коротких вікон (PreNews/MAIN <30 хв), не OK для дайджесту якщо рестарт стається часто.
+- **Стан в пам'яті, не персистентний**: `posted_news`, `posted_events`, `posted_earnings`, `low_priority_news`, `last_sent_slot`, `last_medium_time`, `pending_actual_fetches`, `gemini_blocked_until` — все скидається при рестарті контейнера. Це OK для коротких вікон (PreNews/MAIN <30 хв), не OK для дайджесту якщо рестарт стається часто.
 - **Gemini spend cap**: бажано встановити в AI Studio → Set spend cap (наприклад $5/місяць) як safety net проти runaway costs. Раніше один зациклений лоп з'їв ~$8 за пару днів.
 - **Pollinations** безкоштовний, без API ключа, але може повертати не-картинку (HTML/помилку) — є фолбек на `FALLBACK_IMAGE_URL` (Unsplash).
 
@@ -211,6 +252,7 @@ Railway підхопить з GitHub автоматично за 1-2 хв. Пе�
 | Finnhub PreNews + FactNews | `#economiccalendar` |
 | Дайджест | `#digest` |
 | COT Report | `#cotreport #{TICKER}` (напр. `#cotreport #XAUUSD`) |
+| Earnings | `#{SYMBOL} #earnings #звітність` (напр. `#AAPL #earnings #звітність`) |
 
 ### HIGH (з картинкою)
 ```
@@ -274,6 +316,17 @@ Previous: 3.0%
 {AI summary 3-5 речень українською, mood-based image}
 
 #digest
+```
+
+### Earnings (текст)
+```
+🇺🇸 #AAPL #earnings #звітність
+
+APPLE INC.
+Звіт: Q4 FY2025
+
+Виторг: $94.93B vs $94.10B ✅ (+0.9%)
+EPS:    $1.64 vs $1.59 ✅ (+3.1%)
 ```
 
 ## Що не використовується / dead code
