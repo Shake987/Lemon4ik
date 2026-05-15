@@ -46,7 +46,11 @@ cot_reports, pandas, matplotlib
 
 - Постимо **завжди**, без тротлінгу
 - Викликаємо Gemini для UA-перекладу (1 речення українською)
-- Генеруємо картинку через Pollinations
+- Генеруємо картинку через Pollinations за **тематичним пулом промтів** (`HIGH_NEWS_IMAGE_PROMPTS`):
+  - `monetary` (3 промти) — title містить FED / FOMC / RATE
+  - `inflation` (3 промти) — title містить CPI / INFLATION
+  - `breaking` (3 промти) — title містить URGENT / BREAKING або fallback
+  - `_pick_high_news_image_prompt(title)` обирає bucket за keywords, потім випадковий промт, але **виключає** `_last_high_image_prompt` (anti-repeat — два пости поспіль ніколи не використають той самий промт)
 - Шлемо `send_photo_to_telegram(image, post)`. Якщо Telegram не прийняв фото — фолбек: текст без фото
 
 ### MEDIUM

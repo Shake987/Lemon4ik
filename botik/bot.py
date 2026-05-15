@@ -717,6 +717,60 @@ OPTIONS_IMAGE_PROMPTS = {
 }
 
 
+# === HIGH NEWS image prompts: 3 buckets × 3 prompts (anti-repeat guard у _pick_high_news_image_prompt) ===
+HIGH_NEWS_IMAGE_PROMPTS = {
+    # Monetary policy: FED, FOMC, RATE
+    "monetary": [
+        "cinematic 3D render of the Federal Reserve building facade at twilight, golden interior glow from columns, "
+        "dramatic shadows, abstract dollar bills floating mid-air, ultra-detailed, 8k photorealistic, octane render.",
+        "cinematic close-up of a wooden gavel striking a marble podium in a central bank press room, soft warm lighting, "
+        "slight motion blur on the gavel, blurred audience in background, professional photojournalism style, 8k photorealistic.",
+        "cinematic overhead shot of an ornate central bank conference table, leather chairs, scattered rate-decision papers, "
+        "dramatic chiaroscuro lighting from a chandelier, dark wood textures, cinematic film grain, 8k photorealistic.",
+    ],
+    # Inflation: CPI, INFLATION
+    "inflation": [
+        "cinematic top-down photo of an empty shopping cart on weathered concrete with scattered price tags and a few coins, "
+        "harsh midday light, raw documentary style, muted colors, 8k photorealistic.",
+        "cinematic macro shot of US dollar bills slowly burning at the edges on a black background, glowing embers, "
+        "dramatic side lighting, deep red and amber tones, surreal financial metaphor, 8k photorealistic.",
+        "cinematic 3D render of a vintage gas-station-style price board flipping numbers upward, neon glow against a dark dusk sky, "
+        "motion-blur on flipping digits, cinematic atmosphere, 8k photorealistic, octane render.",
+    ],
+    # Breaking / Urgent / Geopolitics / fallback
+    "breaking": [
+        "cinematic photo of a chaotic newsroom moment, journalists rushing past glowing red BREAKING NEWS screens, "
+        "motion blur, deep blue and crimson lighting, documentary feel, 8k photorealistic.",
+        "cinematic shot of a darkened trading floor with red and green tickers flashing on huge curved monitors, "
+        "a single silhouetted trader in foreground, dramatic backlight, cyberpunk aesthetic, 8k photorealistic.",
+        "cinematic aerial view of a financial district skyline at night, glowing skyscrapers reflected in wet streets, "
+        "a single helicopter spotlight cutting through fog, moody atmospheric lighting, 8k photorealistic.",
+    ],
+}
+
+_last_high_image_prompt = None  # запам'ятовуємо останній використаний промт — щоб не повторити підряд
+
+
+def _pick_high_news_image_prompt(title):
+    """За ключовими словами в title обирає bucket, потім випадковий промт із bucket'а.
+    Anti-repeat: якщо останній використаний промт є серед кандидатів — виключаємо його."""
+    global _last_high_image_prompt
+    t = (title or "").upper()
+    if any(kw in t for kw in ("FED", "FOMC", "RATE")):
+        bucket = "monetary"
+    elif any(kw in t for kw in ("CPI", "INFLATION")):
+        bucket = "inflation"
+    else:
+        bucket = "breaking"
+    candidates = HIGH_NEWS_IMAGE_PROMPTS[bucket]
+    if _last_high_image_prompt in candidates and len(candidates) > 1:
+        candidates = [p for p in candidates if p != _last_high_image_prompt]
+    picked = random.choice(candidates)
+    _last_high_image_prompt = picked
+    print(f"🎨 HIGH image prompt bucket='{bucket}' (title='{title[:60]}...')")
+    return picked
+
+
 def post_options_desk():
     """Постить опціонний деск (BTC + ETH) у понеділок та п'ятницю о 10:00 Київ.
 
@@ -1370,7 +1424,7 @@ def post_cot_reports():
 
 
 def main():
-    global last_post_time, last_medium_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_slot, pending_actual_fetches, last_cot_release_date, posted_earnings, _earnings_test_done, posted_options_dates, _options_test_done
+    global last_post_time, last_medium_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_slot, pending_actual_fetches, last_cot_release_date, posted_earnings, _earnings_test_done, posted_options_dates, _options_test_done, _last_high_image_prompt
 
     last_update = 0
     events = []
@@ -1720,13 +1774,8 @@ Assets:
 
                 try:
                     if impact == "HIGH":
-                        # HIGH → з картинкою
-                        image_prompt = (
-                            "cinematic 3D render of a financial news flash, sleek dark trading terminal, "
-                            "glowing red and gold accent lighting, urgent breaking-news atmosphere, "
-                            "abstract candlestick chart in background, professional cyberpunk aesthetic, "
-                            "8k resolution, photorealistic, sharp focus."
-                        )
+                        # HIGH → з картинкою. Промт обирається з пула 3×3 (тематика + anti-repeat).
+                        image_prompt = _pick_high_news_image_prompt(title)
                         image = generate_ai_image(image_prompt)
                         sent = send_photo_to_telegram(image, post)
                         if not sent:
