@@ -237,6 +237,7 @@ FINNHUB_COUNTRY_TO_CURRENCY = {
 
 # Для цих країн постимо тільки HIGH impact (а не Medium/Low)
 FINNHUB_HIGH_ONLY_COUNTRIES = {"JP", "CA", "AU"}
+FINNHUB_MEDIUM_DROP_PCT = 70  # % Medium-подій (US/EU/GB) скидаємо: детермінований hash, PreNews+MAIN дропаються разом
 
 FINNHUB_IMPACT_MAP = {"high": "High", "medium": "Medium", "low": "Low"}
 
@@ -298,6 +299,14 @@ def get_forexfactory_events():
         # Для JP/CA/AU пропускаємо все крім HIGH
         if country in FINNHUB_HIGH_ONLY_COUNTRIES and impact_raw != "high":
             continue
+
+        # 70% Medium-подій пропускаємо (антиспам). Hash event_key → стабільне рішення:
+        # PreNews і MAIN тої ж події завжди дропаються разом.
+        if impact_raw == "medium":
+            event_key = f"{item.get('event','')}_{country}_{item.get('time','')}"
+            h = hashlib.md5(event_key.encode()).hexdigest()
+            if (int(h[:4], 16) % 100) < FINNHUB_MEDIUM_DROP_PCT:
+                continue
 
         impact = FINNHUB_IMPACT_MAP.get(impact_raw, "Low")
 

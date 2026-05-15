@@ -206,14 +206,16 @@ Country code → currency мапінг у `FINNHUB_COUNTRY_TO_CURRENCY`:
 
 | Country code | Currency | Які impact постимо |
 |---|---|---|
-| US | USD | High + Medium |
-| EU | EUR | High + Medium |
-| GB | GBP | High + Medium |
+| US | USD | High + Medium (30% Medium після антиспам-фільтра) |
+| EU | EUR | High + Medium (30% Medium після антиспам-фільтра) |
+| GB | GBP | High + Medium (30% Medium після антиспам-фільтра) |
 | JP | JPY | тільки High (через `FINNHUB_HIGH_ONLY_COUNTRIES`) |
 | CA | CAD | тільки High |
 | AU | AUD | тільки High |
 
 Інші країни — пропускаються в `get_forexfactory_events()` (назва функції збережена historically, реально працює через Finnhub).
+
+**Антиспам Medium:** `FINNHUB_MEDIUM_DROP_PCT = 70` — 70% Medium-подій (US/EU/GB) пропускаємо. Рішення детерміноване через `md5(event_title + country + time)` — та сама подія завжди або проходить, або дропається. Гарантує що PreNews і MAIN для тої ж події синхронні (обоє або дропаються, або обоє постяться).
 
 Подія повертається у форматі: `{title, currency, impact, time, actual, forecast, previous}`. Далі у main loop:
 - Skip `impact.lower() == "low"`
