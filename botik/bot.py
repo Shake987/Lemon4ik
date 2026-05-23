@@ -1356,8 +1356,13 @@ def post_cot_reports():
     now = datetime.datetime.now(datetime.timezone.utc)
     force = os.environ.get("COT_TEST_NOW", "").lower() in ("1", "true", "yes")
 
-    # П'ятниця = 4 (Monday=0). CFTC викладає звіт о ~20:30 UTC. Запас — постимо після 21:00 UTC.
-    if not force and (now.weekday() != 4 or now.hour < 21):
+    # Вікно публікації: Пт 21:00 UTC → кінець неділі (catch-up на вихідних).
+    # CFTC викладає звіт у Пт ~20:30 UTC; якщо в п'ятницю щось зашпортнулось (фетч впав,
+    # рестарт, дані з запізненням) — субота/неділя наздоженуть. Дедуп last_cot_release_date
+    # не дасть опублікувати той самий звіт двічі.
+    is_friday_evening = now.weekday() == 4 and now.hour >= 21
+    is_weekend = now.weekday() in (5, 6)  # субота, неділя
+    if not force and not (is_friday_evening or is_weekend):
         return False
     if force:
         print("⚙️ COT_TEST_NOW=1 — пропускаємо guard, постимо одразу")
@@ -1368,13 +1373,21 @@ def post_cot_reports():
         print("❌ COT: порожні дані, спробуємо наступного циклу")
         return False
 
-    # Беремо найсвіжішу дату звіту — щоб не дублювати, якщо вже постили
+    # Беремо найсвіжішу дату звіту — щоб не дублювати, якщо вже постили.
+    # ВАЖЛИВО: преферимо YYYY-MM-DD колонку + .astype(str). Інакше _find_col грабає
+    # integer-колонку YYMMDD (напр. 260519), а pandas парсить int як наносекунди з епохи
+    # → дата 1970-01-01, і дедуп ламається назавжди (звіт "вже опублікований").
     name_col = _find_col(df, ["market", "exchange", "names"])
-    date_col = _find_col(df, ["as_of_date"]) or _find_col(df, ["report_date"])
+    date_col = (
+        _find_col(df, ["report_date", "yyyy"]) or
+        _find_col(df, ["as_of_date", "yyyy"]) or
+        _find_col(df, ["report_date"]) or
+        _find_col(df, ["as_of_date"])
+    )
     if not date_col:
         print("❌ COT: не знайдено колонку дати")
         return False
-    latest = pd.to_datetime(df[date_col], errors="coerce", format="mixed").max().date()
+    latest = pd.to_datetime(df[date_col].astype(str), errors="coerce", format="mixed").max().date()
 
     if last_cot_release_date == latest:
         print(f"COT: звіт за {latest} вже опублікований, скіп")
