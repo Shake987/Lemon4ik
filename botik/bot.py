@@ -762,14 +762,12 @@ def _build_options_post(asset, current, weekly_data, monthly_data, weekly_exp, m
 
 OPTIONS_IMAGE_PROMPTS = {
     "BTC": (
-        "A dark Bloomberg-style trading terminal screen showing a Bitcoin options chain table with glowing "
-        "orange strike prices and open interest numbers, a small candlestick chart in the corner, "
-        "cinematic financial photograph, close-up focused on the screen."
+        "A sleek cyberpunk workspace at night, a wide curved monitor glowing with abstract orange and amber "
+        "candlestick patterns, warm neon desk accents, dark atmospheric lighting, moody cinematic photograph."
     ),
     "ETH": (
-        "A dark Bloomberg-style trading terminal screen showing an Ethereum options chain table with glowing "
-        "electric blue and purple strike prices and open interest numbers, a small candlestick chart in the corner, "
-        "cinematic financial photograph, close-up focused on the screen."
+        "A sleek cyberpunk workspace at night, a wide curved monitor glowing with abstract electric blue and "
+        "violet candlestick patterns, cool neon desk accents, dark atmospheric lighting, moody cinematic photograph."
     ),
 }
 
