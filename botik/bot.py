@@ -187,6 +187,7 @@ def call_gemini_ai(prompt):
     return "Не вдалося згенерувати аналітику ринку."
 
 def generate_ai_image(prompt):
+    """Pollinations — безкоштовний fallback. Якість непередбачувана."""
     try:
         encoded = urllib.parse.quote(prompt)
         seed = random.randint(1, 10_000_000)
@@ -206,6 +207,52 @@ def generate_ai_image(prompt):
     except Exception as e:
         print(f"Помилка генерації зображення: {e}")
         return FALLBACK_IMAGE_URL
+
+
+# Circuit breaker для Imagen (окремо від Gemini text — може блокнутись через billing)
+imagen_blocked_until = 0
+IMAGEN_MODEL = "imagen-4.0-fast-generate-001"  # $0.02/картинку
+
+
+def generate_imagen_image(prompt):
+    """Google Imagen 4 Fast через Gemini API (~$0.02/img). Billing має бути enabled.
+    На будь-який failure — fallback на Pollinations через generate_ai_image()."""
+    global imagen_blocked_until
+
+    if time.time() < imagen_blocked_until:
+        remaining = int(imagen_blocked_until - time.time())
+        print(f"⏭ Imagen заблокований ще {remaining}с → Pollinations fallback")
+        return generate_ai_image(prompt)
+
+    try:
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+        response = client.models.generate_images(
+            model=IMAGEN_MODEL,
+            prompt=prompt,
+            config={
+                "number_of_images": 1,
+                "aspect_ratio": "1:1",
+                "safety_filter_level": "BLOCK_LOW_AND_ABOVE",
+                "person_generation": "ALLOW_ADULT",
+            },
+        )
+        imgs = getattr(response, "generated_images", None) or []
+        if not imgs:
+            print(f"⚠️ Imagen: порожня відповідь → Pollinations fallback")
+            return generate_ai_image(prompt)
+        img_bytes = imgs[0].image.image_bytes
+        print(f"✅ Imagen {IMAGEN_MODEL}: {len(img_bytes)} байт")
+        return img_bytes
+    except Exception as e:
+        msg = str(e).lower()
+        # Billing/quota/permission — блокуємо надовго, щоб не палити гроші
+        if any(k in msg for k in ("billing", "quota", "resource_exhausted",
+                                   "permission_denied", "403", "prepayment")):
+            imagen_blocked_until = time.time() + 3600  # 1 година
+            print(f"⛔ Imagen недоступний ({e}). Блок на 1 год, fallback Pollinations.")
+        else:
+            print(f"⚠️ Imagen error: {e} → Pollinations fallback")
+        return generate_ai_image(prompt)
 
 from bs4 import BeautifulSoup
 
@@ -705,46 +752,38 @@ def _build_options_post(asset, current, weekly_data, monthly_data, weekly_exp, m
 
 OPTIONS_IMAGE_PROMPTS = {
     "BTC": (
-        "cinematic 3D render of Bitcoin options trading desk, glowing orange and gold neon accents, "
-        "abstract candlestick chart and option chain matrix in background, dark cyberpunk financial terminal, "
-        "professional Bloomberg-style aesthetic, 8k photorealistic, sharp focus, octane render."
+        "A dark Bloomberg-style trading terminal screen showing a Bitcoin options chain table with glowing "
+        "orange strike prices and open interest numbers, a small candlestick chart in the corner, "
+        "cinematic financial photograph, close-up focused on the screen."
     ),
     "ETH": (
-        "cinematic 3D render of Ethereum options analytics dashboard, glowing electric blue and purple neon accents, "
-        "abstract derivatives matrix and strike levels visualization, dark cyberpunk financial terminal, "
-        "professional Bloomberg-style aesthetic, 8k photorealistic, sharp focus, octane render."
+        "A dark Bloomberg-style trading terminal screen showing an Ethereum options chain table with glowing "
+        "electric blue and purple strike prices and open interest numbers, a small candlestick chart in the corner, "
+        "cinematic financial photograph, close-up focused on the screen."
     ),
 }
 
 
 # === HIGH NEWS image prompts: 3 buckets × 3 prompts (anti-repeat guard у _pick_high_news_image_prompt) ===
+# Переписані для Imagen 4: короткі, конкретні, природною мовою. Без "8k octane" шуму.
 HIGH_NEWS_IMAGE_PROMPTS = {
     # Monetary policy: FED, FOMC, RATE
     "monetary": [
-        "cinematic 3D render of the Federal Reserve building facade at twilight, golden interior glow from columns, "
-        "dramatic shadows, abstract dollar bills floating mid-air, ultra-detailed, 8k photorealistic, octane render.",
-        "cinematic close-up of a wooden gavel striking a marble podium in a central bank press room, soft warm lighting, "
-        "slight motion blur on the gavel, blurred audience in background, professional photojournalism style, 8k photorealistic.",
-        "cinematic overhead shot of an ornate central bank conference table, leather chairs, scattered rate-decision papers, "
-        "dramatic chiaroscuro lighting from a chandelier, dark wood textures, cinematic film grain, 8k photorealistic.",
+        "The facade of the Federal Reserve building at golden hour, warm interior lights glowing through classical columns, no people, cinematic photograph.",
+        "Close-up of a judge's gavel resting on a wooden sound block on a government podium, warm formal briefing-room lighting, documentary photo.",
+        "An overhead view of an empty central bank conference table with scattered policy documents, leather chairs around it, moody overhead chiaroscuro lighting.",
     ],
     # Inflation: CPI, INFLATION
     "inflation": [
-        "cinematic top-down photo of an empty shopping cart on weathered concrete with scattered price tags and a few coins, "
-        "harsh midday light, raw documentary style, muted colors, 8k photorealistic.",
-        "cinematic macro shot of US dollar bills slowly burning at the edges on a black background, glowing embers, "
-        "dramatic side lighting, deep red and amber tones, surreal financial metaphor, 8k photorealistic.",
-        "cinematic 3D render of a vintage gas-station-style price board flipping numbers upward, neon glow against a dark dusk sky, "
-        "motion-blur on flipping digits, cinematic atmosphere, 8k photorealistic, octane render.",
+        "An abandoned empty shopping cart in a sun-bleached parking lot, scattered price tags and coins on the asphalt, harsh noon light, documentary photograph.",
+        "Macro photograph of a stack of US hundred-dollar bills with slowly burning edges on a dark surface, glowing embers, deep red and amber tones.",
+        "A vintage gas-station price sign at dusk showing rising fuel prices, warm neon glow against twilight sky, cinematic urban photograph.",
     ],
     # Breaking / Urgent / Geopolitics / fallback
     "breaking": [
-        "cinematic photo of a chaotic newsroom moment, journalists rushing past glowing red BREAKING NEWS screens, "
-        "motion blur, deep blue and crimson lighting, documentary feel, 8k photorealistic.",
-        "cinematic shot of a darkened trading floor with red and green tickers flashing on huge curved monitors, "
-        "a single silhouetted trader in foreground, dramatic backlight, cyberpunk aesthetic, 8k photorealistic.",
-        "cinematic aerial view of a financial district skyline at night, glowing skyscrapers reflected in wet streets, "
-        "a single helicopter spotlight cutting through fog, moody atmospheric lighting, 8k photorealistic.",
+        "A chaotic newsroom at night, glowing red BREAKING NEWS banners on large monitors behind the desks, journalists in motion blur, cinematic photograph.",
+        "A darkened trading floor with walls of red and green stock tickers on huge curved monitors, one silhouetted trader looking at them, dramatic backlight.",
+        "An aerial night view of a financial district skyline, skyscraper lights reflected in wet streets, a helicopter searchlight piercing fog, cinematic photograph.",
     ],
 }
 
@@ -823,9 +862,9 @@ def post_options_desk():
 
             post = _build_options_post(currency, current, weekly_data, monthly_data, weekly_exp, monthly_exp, ai)
 
-            # Картинка через Pollinations (тематична по валюті). Фолбек — текст без фото.
+            # Картинка через Imagen 4 Fast (fallback → Pollinations у функції). Якщо Telegram не прийняв — текст без фото.
             image_prompt = OPTIONS_IMAGE_PROMPTS.get(currency, OPTIONS_IMAGE_PROMPTS["BTC"])
-            image = generate_ai_image(image_prompt)
+            image = generate_imagen_image(image_prompt)
             sent = send_photo_to_telegram(image, post, parse_mode="Markdown")
             if not sent:
                 print(f"⚠️ Options {currency}: фото не доставлено → шлю текст")
@@ -893,25 +932,16 @@ def send_low_priority_digest():
 
     if market_mood == "Bullish":
         image_prompt = (
-    "cinematic shot, high-angle view of a modern trading desk at sunrise. "
-    "Dark-mode mechanical keyboard glowing green, multiple curved monitors displaying sleek, "
-    "hyper-detailed fluorescent green Japanese candlestick charts trending strongly UP. "
-    "A matte black ceramic mug with a subtle, stylized charging Bull logo. "
-    "In the blurred background through a large window, a vibrant cityscape twilight "
-    "with rising sun rays. Soft, golden natural lighting, shallow depth of field, "
-    "professional trading environment style, 8k resolution, photorealistic, highly detailed."
+            "A modern trading desk at sunrise, multiple monitors glowing with green upward candlestick charts, "
+            "warm golden light coming through a window overlooking a city skyline, cinematic photograph."
         )
     else:
         image_prompt = (
-    "sleek futuristic financial terminal graphics, deep void-black background with subtle "
-    "dark blue and gray geometric grid overlays. Intricate, detailed neon red candlestick charts "
-    "trending DOWN, contrasted with smoothness index lines in vibrant electric green and deep purple. "
-    "Close-up, focused perspective, technical abstract art style, dramatic sci-fi lighting, "
-    "cyberpunk aesthetics, highly detailed UI elements, professional Bloomberg terminal aesthetic, "
-    "8k resolution, sharp focus, octane render."
+            "A dark trading terminal at night showing a monitor with red downward candlestick charts, "
+            "moody cyberpunk atmosphere, deep blue and red ambient light, cinematic financial photograph."
         )
 
-    image_url = generate_ai_image(image_prompt)
+    image_url = generate_imagen_image(image_prompt)
 
     # Telegram sendPhoto caption limit = 1024 chars
     prefix = "📊 **DAILY MARKET SUMMARY (Low Impact)**\n\n"
@@ -1789,7 +1819,7 @@ Assets:
                     if impact == "HIGH":
                         # HIGH → з картинкою. Промт обирається з пула 3×3 (тематика + anti-repeat).
                         image_prompt = _pick_high_news_image_prompt(title)
-                        image = generate_ai_image(image_prompt)
+                        image = generate_imagen_image(image_prompt)
                         sent = send_photo_to_telegram(image, post)
                         if not sent:
                             # Як фолбек — текст без картинки
