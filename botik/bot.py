@@ -209,50 +209,60 @@ def generate_ai_image(prompt):
         return FALLBACK_IMAGE_URL
 
 
-# Circuit breaker для Imagen (окремо від Gemini text — може блокнутись через billing)
+# Circuit breaker для AI image gen (окремо від Gemini text — може блокнутись через billing)
 imagen_blocked_until = 0
-IMAGEN_MODEL = "imagen-4.0-fast-generate-001"  # $0.02/картинку
+# Gemini native image generation через generate_content (Imagen окремим API не доступний у AI Studio).
+# Спроба основна → preview (на випадок якщо stable назва ще не прокатилась у регіоні).
+GEMINI_IMAGE_MODELS = [
+    "gemini-2.5-flash-image",
+    "gemini-2.5-flash-image-preview",
+]
 
 
 def generate_imagen_image(prompt):
-    """Google Imagen 4 Fast через Gemini API (~$0.02/img). Billing має бути enabled.
-    На будь-який failure — fallback на Pollinations через generate_ai_image()."""
+    """Google Gemini native image generation через generate_content (модель gemini-2.5-flash-image).
+    Через AI Studio Prepay credits (~$0.03-0.04/img). На failure → fallback Pollinations."""
     global imagen_blocked_until
 
     if time.time() < imagen_blocked_until:
         remaining = int(imagen_blocked_until - time.time())
-        print(f"⏭ Imagen заблокований ще {remaining}с → Pollinations fallback")
+        print(f"⏭ Image gen заблоковано ще {remaining}с → Pollinations fallback")
         return generate_ai_image(prompt)
 
-    try:
-        client = genai.Client(api_key=GOOGLE_API_KEY)
-        response = client.models.generate_images(
-            model=IMAGEN_MODEL,
-            prompt=prompt,
-            config={
-                "number_of_images": 1,
-                "aspect_ratio": "1:1",
-                "safety_filter_level": "BLOCK_LOW_AND_ABOVE",
-                "person_generation": "ALLOW_ADULT",
-            },
-        )
-        imgs = getattr(response, "generated_images", None) or []
-        if not imgs:
-            print(f"⚠️ Imagen: порожня відповідь → Pollinations fallback")
-            return generate_ai_image(prompt)
-        img_bytes = imgs[0].image.image_bytes
-        print(f"✅ Imagen {IMAGEN_MODEL}: {len(img_bytes)} байт")
-        return img_bytes
-    except Exception as e:
-        msg = str(e).lower()
-        # Billing/quota/permission — блокуємо надовго, щоб не палити гроші
-        if any(k in msg for k in ("billing", "quota", "resource_exhausted",
-                                   "permission_denied", "403", "prepayment")):
-            imagen_blocked_until = time.time() + 3600  # 1 година
-            print(f"⛔ Imagen недоступний ({e}). Блок на 1 год, fallback Pollinations.")
-        else:
-            print(f"⚠️ Imagen error: {e} → Pollinations fallback")
-        return generate_ai_image(prompt)
+    client = genai.Client(api_key=GOOGLE_API_KEY)
+    last_err = None
+    for model in GEMINI_IMAGE_MODELS:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=genai.types.GenerateContentConfig(
+                    response_modalities=["IMAGE"],
+                ),
+            )
+            # Шукаємо inline_data (image bytes) у parts
+            for candidate in (response.candidates or []):
+                parts = getattr(getattr(candidate, "content", None), "parts", None) or []
+                for part in parts:
+                    inline = getattr(part, "inline_data", None)
+                    data = getattr(inline, "data", None) if inline else None
+                    if data:
+                        print(f"✅ {model}: {len(data)} байт")
+                        return data
+            print(f"⚠️ {model}: немає inline_data у відповіді, пробую наступну модель")
+        except Exception as e:
+            last_err = e
+            msg = str(e).lower()
+            # Billing/quota/permission — блокуємо надовго, фолбек Pollinations
+            if any(k in msg for k in ("billing", "quota", "resource_exhausted",
+                                       "permission_denied", "403", "prepayment")):
+                imagen_blocked_until = time.time() + 3600  # 1 година
+                print(f"⛔ Image gen недоступний ({e}). Блок на 1 год, fallback Pollinations.")
+                return generate_ai_image(prompt)
+            print(f"⚠️ {model} error: {e}, пробую наступну модель")
+
+    print(f"⚠️ Жодна image model не спрацювала (last error: {last_err}) → Pollinations fallback")
+    return generate_ai_image(prompt)
 
 from bs4 import BeautifulSoup
 

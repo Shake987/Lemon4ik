@@ -14,7 +14,7 @@ Telegram-бот для трейдерів. Парсить економічний
 | **Finnhub Economic Calendar API** | Економічний календар (PreNews + Actual) | `get_forexfactory_events()` — назва функції збережена для сумісності, реальне джерело тепер Finnhub |
 | RSS-фіди (BBC, FXStreet, MarketWatch, SCMP, CoinTelegraph, CoinDesk, Investing.com) | Новини | `feedparser` на список `RSS_URLS` |
 | Google Gemini API | UA-переклад HIGH-новин + аналітика дайджесту + COT-коментарі | `call_gemini_ai()`, моделі: `gemini-2.5-flash-lite` (дешева first), `gemini-2.5-flash`, `gemini-2.0-flash` |
-| **Google Imagen 4 Fast** | Основне джерело картинок (HIGH, Options, Digest). ~$0.02/img, через Gemini API | `generate_imagen_image()`, модель `imagen-4.0-fast-generate-001` |
+| **Gemini 2.5 Flash Image** | Основне джерело картинок (HIGH, Options, Digest). Через AI Studio Prepay (~$0.03-0.04/img). Native Gemini image generation через `generate_content` | `generate_imagen_image()`, моделі `gemini-2.5-flash-image` → `gemini-2.5-flash-image-preview` як fallback |
 | Pollinations AI (fallback) | Безкоштовний fallback коли Imagen недоступний (billing/quota/error) | `generate_ai_image()` через `image.pollinations.ai` |
 | **CFTC через `cot_reports`** | COT звіти (тижневі позиції хедж-фондів) | `post_cot_reports()`, бібліотека `cot_reports` |
 | **Finnhub Earnings Calendar API** | Квартальна звітність акцій (Revenue + EPS actual/estimate) | `post_earnings_reports()` через `/calendar/earnings` |
@@ -47,7 +47,7 @@ cot_reports, pandas, matplotlib
 
 - Постимо **завжди**, без тротлінгу
 - Викликаємо Gemini для UA-перекладу (1 речення українською)
-- Генеруємо картинку через **Imagen 4 Fast** (fallback → Pollinations у `generate_imagen_image()`) за **тематичним пулом промтів** (`HIGH_NEWS_IMAGE_PROMPTS`):
+- Генеруємо картинку через **Gemini 2.5 Flash Image** (fallback → Pollinations у `generate_imagen_image()`) за **тематичним пулом промтів** (`HIGH_NEWS_IMAGE_PROMPTS`):
   - `monetary` (3 промти) — title містить FED / FOMC / RATE
   - `inflation` (3 промти) — title містить CPI / INFLATION
   - `breaking` (3 промти) — title містить URGENT / BREAKING або fallback
@@ -292,7 +292,7 @@ Railway підхопить з GitHub автоматично за 1-2 хв. Пе�
 - **Часова зона**: код використовує `datetime.datetime.now()` без tz — це серверний час (Railway = UTC). Київ зимою = UTC+2, влітку = UTC+3.
 - **Стан в пам'яті, не персистентний**: `posted_news`, `posted_events`, `posted_earnings`, `posted_options_dates`, `low_priority_news`, `last_sent_slot`, `last_medium_time`, `pending_actual_fetches`, `gemini_blocked_until` — все скидається при рестарті контейнера. Це OK для коротких вікон (PreNews/MAIN <30 хв), не OK для дайджесту якщо рестарт стається часто.
 - **Gemini spend cap**: бажано встановити в AI Studio → Set spend cap (наприклад $5/місяць) як safety net проти runaway costs. Раніше один зациклений лоп з'їв ~$8 за пару днів.
-- **Imagen 4 Fast** потребує enabled billing на Google AI / Cloud (без billing — 403 PERMISSION_DENIED). Circuit breaker: `imagen_blocked_until` блокує Imagen на 1 годину при будь-якій billing/quota помилці, трафік іде на Pollinations до розблокування.
+- **Gemini 2.5 Flash Image** потребує enabled billing (AI Studio Prepay credits). Старий `generate_images()` API застарів і працює лише у Vertex AI mode — у Developer API повертає `This method is only supported in Gemini Enterprise Agent Platform mode`. Перейшли на `generate_content` з `response_modalities=["IMAGE"]`, витягуємо bytes з `inline_data.data`. Circuit breaker `imagen_blocked_until` блокує image gen на 1 годину при billing/quota помилці, трафік іде на Pollinations до розблокування.
 - **Pollinations** безкоштовний, без API ключа, але може повертати не-картинку (HTML/помилку) — є фолбек на `FALLBACK_IMAGE_URL` (Unsplash).
 
 ## Формати постів (для довідки)
@@ -408,7 +408,7 @@ EPS:    $1.64 vs $1.59 ✅ (+3.1%)
 ```
 
 - Жирним (`*term*`, Telegram legacy Markdown): назви секцій, метрик
-- Картинка генерується Imagen 4 Fast за тематичним промптом (`OPTIONS_IMAGE_PROMPTS`): для BTC — orange акценти, для ETH — blue/purple акценти. Fallback → Pollinations у `generate_imagen_image()`
+- Картинка генерується Gemini 2.5 Flash Image за тематичним промптом (`OPTIONS_IMAGE_PROMPTS`): для BTC — orange акценти, для ETH — blue/purple акценти. Fallback → Pollinations у `generate_imagen_image()`
 - Фолбек: якщо Telegram не прийняв фото — шлемо текст-only через `send_to_telegram`
 
 ## Що не використовується / dead code
