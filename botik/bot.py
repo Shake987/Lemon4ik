@@ -772,52 +772,6 @@ OPTIONS_IMAGE_PROMPTS = {
 }
 
 
-# === HIGH NEWS image prompts: 3 buckets × 3 prompts (anti-repeat guard у _pick_high_news_image_prompt) ===
-# Переписані для Imagen 4: короткі, конкретні, природною мовою. Без "8k octane" шуму.
-HIGH_NEWS_IMAGE_PROMPTS = {
-    # Monetary policy: FED, FOMC, RATE
-    "monetary": [
-        "The facade of the Federal Reserve building at golden hour, warm interior lights glowing through classical columns, no people, cinematic photograph.",
-        "Close-up of a judge's gavel resting on a wooden sound block on a government podium, warm formal briefing-room lighting, documentary photo.",
-        "An overhead view of an empty central bank conference table with scattered policy documents, leather chairs around it, moody overhead chiaroscuro lighting.",
-    ],
-    # Inflation: CPI, INFLATION
-    "inflation": [
-        "An abandoned empty shopping cart in a sun-bleached parking lot, scattered price tags and coins on the asphalt, harsh noon light, documentary photograph.",
-        "Macro photograph of a stack of US hundred-dollar bills with slowly burning edges on a dark surface, glowing embers, deep red and amber tones.",
-        "A vintage gas-station price sign at dusk showing rising fuel prices, warm neon glow against twilight sky, cinematic urban photograph.",
-    ],
-    # Breaking / Urgent / Geopolitics / fallback
-    "breaking": [
-        "A chaotic newsroom at night, glowing red BREAKING NEWS banners on large monitors behind the desks, journalists in motion blur, cinematic photograph.",
-        "A darkened trading floor with walls of red and green stock tickers on huge curved monitors, one silhouetted trader looking at them, dramatic backlight.",
-        "An aerial night view of a financial district skyline, skyscraper lights reflected in wet streets, a helicopter searchlight piercing fog, cinematic photograph.",
-    ],
-}
-
-_last_high_image_prompt = None  # запам'ятовуємо останній використаний промт — щоб не повторити підряд
-
-
-def _pick_high_news_image_prompt(title):
-    """За ключовими словами в title обирає bucket, потім випадковий промт із bucket'а.
-    Anti-repeat: якщо останній використаний промт є серед кандидатів — виключаємо його."""
-    global _last_high_image_prompt
-    t = (title or "").upper()
-    if any(kw in t for kw in ("FED", "FOMC", "RATE")):
-        bucket = "monetary"
-    elif any(kw in t for kw in ("CPI", "INFLATION")):
-        bucket = "inflation"
-    else:
-        bucket = "breaking"
-    candidates = HIGH_NEWS_IMAGE_PROMPTS[bucket]
-    if _last_high_image_prompt in candidates and len(candidates) > 1:
-        candidates = [p for p in candidates if p != _last_high_image_prompt]
-    picked = random.choice(candidates)
-    _last_high_image_prompt = picked
-    print(f"🎨 HIGH image prompt bucket='{bucket}' (title='{title[:60]}...')")
-    return picked
-
-
 def post_options_desk():
     """Постить опціонний деск (BTC + ETH) у понеділок та п'ятницю о 10:00 Київ.
 
@@ -1475,7 +1429,7 @@ def post_cot_reports():
 
 
 def main():
-    global last_post_time, last_medium_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_slot, pending_actual_fetches, last_cot_release_date, posted_earnings, _earnings_test_done, posted_options_dates, _options_test_done, _last_high_image_prompt
+    global last_post_time, last_medium_time, low_priority_news, last_digest_time, posted_news, posted_events, last_sent_slot, pending_actual_fetches, last_cot_release_date, posted_earnings, _earnings_test_done, posted_options_dates, _options_test_done
 
     last_update = 0
     events = []
@@ -1824,17 +1778,11 @@ Assets:
                     continue
 
                 try:
-                    if impact == "HIGH":
-                        # HIGH → з картинкою. Промт обирається з пула 3×3 (тематика + anti-repeat).
-                        image_prompt = _pick_high_news_image_prompt(title)
-                        image = generate_imagen_image(image_prompt)
-                        sent = send_photo_to_telegram(image, post)
-                        if not sent:
-                            # Як фолбек — текст без картинки
-                            send_to_telegram(post)
-                    else:
-                        # MEDIUM → текст
-                        send_to_telegram(post)
+                    # HIGH і MEDIUM обидва → текст без картинки.
+                    # (Картинки прибрані 2026-10 — Gemini image gen для HIGH спалював $6/день
+                    # у піковий news day при 150+ новинах; собівартість vs цінність не виправдали.)
+                    send_to_telegram(post)
+                    if impact == "MEDIUM":
                         last_medium_time = time.time()
 
                     last_post_time = time.time()

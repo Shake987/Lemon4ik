@@ -14,7 +14,7 @@ Telegram-бот для трейдерів. Парсить економічний
 | **Finnhub Economic Calendar API** | Економічний календар (PreNews + Actual) | `get_forexfactory_events()` — назва функції збережена для сумісності, реальне джерело тепер Finnhub |
 | RSS-фіди (BBC, FXStreet, MarketWatch, SCMP, CoinTelegraph, CoinDesk, Investing.com) | Новини | `feedparser` на список `RSS_URLS` |
 | Google Gemini API | UA-переклад HIGH-новин + аналітика дайджесту + COT-коментарі | `call_gemini_ai()`, моделі: `gemini-2.5-flash-lite` (дешева first), `gemini-2.5-flash`, `gemini-2.0-flash` |
-| **Gemini 2.5 Flash Image** | Основне джерело картинок (HIGH, Options, Digest). Через AI Studio Prepay (~$0.03-0.04/img). Native Gemini image generation через `generate_content` | `generate_imagen_image()`, моделі `gemini-2.5-flash-image` → `gemini-2.5-flash-image-preview` як fallback |
+| **Gemini 2.5 Flash Image** | Картинки для **Options Desk + Digest** (HIGH news більше без картинок). Через AI Studio Prepay (~$0.03-0.04/img). Native Gemini image generation через `generate_content` | `generate_imagen_image()`, моделі `gemini-2.5-flash-image` → `gemini-2.5-flash-image-preview` як fallback |
 | Pollinations AI (fallback) | Безкоштовний fallback коли Imagen недоступний (billing/quota/error) | `generate_ai_image()` через `image.pollinations.ai` |
 | **CFTC через `cot_reports`** | COT звіти (тижневі позиції хедж-фондів) | `post_cot_reports()`, бібліотека `cot_reports` |
 | **Finnhub Earnings Calendar API** | Квартальна звітність акцій (Revenue + EPS actual/estimate) | `post_earnings_reports()` через `/calendar/earnings` |
@@ -46,13 +46,9 @@ cot_reports, pandas, matplotlib
 ### HIGH
 
 - Постимо **завжди**, без тротлінгу
-- Викликаємо Gemini для UA-перекладу (1 речення українською)
-- Генеруємо картинку через **Gemini 2.5 Flash Image** (fallback → Pollinations у `generate_imagen_image()`) за **тематичним пулом промтів** (`HIGH_NEWS_IMAGE_PROMPTS`):
-  - `monetary` (3 промти) — title містить FED / FOMC / RATE
-  - `inflation` (3 промти) — title містить CPI / INFLATION
-  - `breaking` (3 промти) — title містить URGENT / BREAKING або fallback
-  - `_pick_high_news_image_prompt(title)` обирає bucket за keywords, потім випадковий промт, але **виключає** `_last_high_image_prompt` (anti-repeat — два пости поспіль ніколи не використають той самий промт)
-- Шлемо `send_photo_to_telegram(image, post)`. Якщо Telegram не прийняв фото — фолбек: текст без фото
+- Викликаємо Gemini для UA-перекладу (1 речення українською) — Gemini text, дешево
+- **Без картинки** — у жовтні 2026 прибрали, бо на день з Fed-подією (14.10.2026) RSS від 6 джерел продубльовували одну новину 150+ разів, кожна = $0.04 на картинку = $6/день. Користь від AI-картинки не виправдала вартості. Якщо колись треба повернути — див. git history (commit 463c346 містить `HIGH_NEWS_IMAGE_PROMPTS` + `_pick_high_news_image_prompt`)
+- Шлемо `send_to_telegram(post)` — просто текст
 
 ### MEDIUM
 
@@ -309,7 +305,7 @@ Railway підхопить з GitHub автоматично за 1-2 хв. Пе�
 | Earnings | `#{SYMBOL} #earnings #звітність` (напр. `#AAPL #earnings #звітність`) |
 | Options Desk | `#optionsdesk #{CURRENCY}` (напр. `#optionsdesk #BTC`) |
 
-### HIGH (з картинкою)
+### HIGH (текст, без картинки — див. розділ `HIGH` вище)
 ```
 🚨 **Macro Update**
 
